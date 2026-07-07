@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VI Triage — Upload CSVs</title>
+<style>
+:root{--bg:#0d1117;--panel:#151b24;--line:#26303f;--text:#e6ecf4;--muted:#8b98ab;--amber:#f5a623;--go:#2ecc8f;--pass:#e05563}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;display:flex;justify-content:center;padding:60px 20px}
+.wrap{max-width:640px;width:100%}
+h1{font-size:22px;font-weight:700;margin-bottom:6px}
+h1 span{color:var(--amber)}
+.sub{color:var(--muted);font-size:13px;margin-bottom:32px;line-height:1.5}
+.field{margin-bottom:22px}
+label{display:block;font-size:13px;font-weight:600;margin-bottom:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+label em{color:var(--amber);font-style:normal;font-weight:400;text-transform:none;letter-spacing:0;font-size:12px;margin-left:6px}
+input[type=file]{background:var(--panel);border:1px dashed var(--line);border-radius:8px;padding:18px;width:100%;color:var(--text);cursor:pointer;font-size:13px}
+input[type=file]:hover{border-color:var(--amber)}
+input[type=file]::file-selector-button{background:var(--amber);color:#000;border:none;padding:6px 14px;border-radius:5px;font-weight:600;cursor:pointer;margin-right:12px;font-size:12px}
+button{background:var(--amber);color:#000;border:none;padding:12px 32px;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;margin-top:10px;transition:opacity .15s}
+button:hover{opacity:.9}
+button:disabled{opacity:.4;cursor:not-allowed}
+.result{margin-top:28px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;font-size:13px;line-height:1.7;display:none}
+.result.ok{border-color:var(--go)} .result.err{border-color:var(--pass)}
+.result h3{font-size:15px;margin-bottom:8px}
+.stat{display:inline-block;background:rgba(245,166,35,.12);color:var(--amber);padding:3px 10px;border-radius:5px;font-weight:700;margin:2px 4px 2px 0;font-size:12px}
+a{color:var(--amber)}
+.back{margin-top:24px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>VI Triage <span>— Upload Weekly CSVs</span></h1>
+<div class="sub">Drop the 3 CSV files from John's Slack run. The moat scorer will process them and update the live dashboard.</div>
+
+<div class="field">
+  <label>a_all_active_projects.csv <em>required — full project list</em></label>
+  <input type="file" id="fa" accept=".csv">
+</div>
+<div class="field">
+  <label>b_new_active_leads.csv <em>optional — this week's new leads</em></label>
+  <input type="file" id="fb" accept=".csv">
+</div>
+<div class="field">
+  <label>c_new_leads_contacts.csv <em>optional — contacts for new leads</em></label>
+  <input type="file" id="fc" accept=".csv">
+</div>
+
+<button id="btn" onclick="upload()">Score & Upload</button>
+
+<div class="result" id="res"></div>
+<div class="back"><a href="/">← Back to dashboard</a></div>
+</div>
+
+<script>
+async function upload(){
+  const btn = document.getElementById('btn');
+  const res = document.getElementById('res');
+  btn.disabled = true; btn.textContent = 'Processing…';
+  res.style.display = 'none';
+
+  const fd = new FormData();
+  const fa = document.getElementById('fa').files[0];
+  const fb = document.getElementById('fb').files[0];
+  const fc = document.getElementById('fc').files[0];
+  if(!fa){ alert('a_all_active_projects.csv is required'); btn.disabled=false; btn.textContent='Score & Upload'; return; }
+  fd.append('a_projects', fa);
+  if(fb) fd.append('b_leads', fb);
+  if(fc) fd.append('c_contacts', fc);
+
+  try {
+    const r = await fetch('/api/upload', {method:'POST', body:fd});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error||'Upload failed');
+    const s = d.summary;
+    res.className = 'result ok'; res.style.display = 'block';
+    res.innerHTML = `<h3>Run ${d.run_id}</h3>
+      <span class="stat">Total active: ${s.total_active}</span>
+      <span class="stat">New this run: ${s.new_this_run}</span>
+      <span class="stat" style="background:rgba(46,204,143,.12);color:var(--go)">GO: ${s.go}</span>
+      <span class="stat" style="background:rgba(245,166,35,.12)">MAYBE: ${s.maybe}</span>
+      <span class="stat" style="background:rgba(224,85,99,.12);color:var(--pass)">PASS: ${s.pass}</span>
+      <br><br><a href="/">View dashboard →</a>`;
+  } catch(e) {
+    res.className = 'result err'; res.style.display = 'block';
+    res.innerHTML = `<h3>Error</h3>${e.message}`;
+  }
+  btn.disabled = false; btn.textContent = 'Score & Upload';
+}
+</script>
+</body>
+</html>
