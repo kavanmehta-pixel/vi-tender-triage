@@ -1,5 +1,5 @@
 import os, json, csv, io, re, sqlite3, hashlib, secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from flask import Flask, request, jsonify, render_template, g
 
 app = Flask(__name__)
@@ -48,7 +48,9 @@ def init_db():
         commodity TEXT,
         first_seen_at TEXT,
         last_seen_at TEXT,
-        run_id TEXT
+        run_id TEXT,
+        closing_date TEXT,
+        is_closed INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS contacts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +82,75 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_run_id ON projects(run_id);
     CREATE INDEX IF NOT EXISTS idx_verdict ON projects(verdict);
     """)
+    # Migrations for existing DBs
+    try:
+        db.execute("ALTER TABLE projects ADD COLUMN closing_date TEXT")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE projects ADD COLUMN is_closed INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    db.commit()
     db.close()
+
+
+# ─── Date Parser ────────────────────────────────────────────────────────
+
+MONTH_MAP = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+    'january': 1, 'february': 2, 'march': 3, 'april': 4, 'june': 6,
+    'july': 7, 'august': 8, 'september': 9, 'october': 10,
+    'november': 11, 'december': 12,
+}
+
+def extract_closing_date(stage_text):
+    """Extract closing date from stage field text. Returns ISO date string or None."""
+    if not stage_text:
+        return None
+    text = stage_text.lower()
+
+    # Priority: look near close/closing/deadline keywords first
+    patterns = [
+        # "closes 14 Jul 2026", "closing 9 July 2026", "close 20 July 2026"
+        r'clos(?:e[sd]?|ing)[^;\n]{0,40}?(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})',
+        # "due 14 Jul 2026"
+        r'due[^;\n]{0,20}?(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})',
+        # Fallback: any "14 Jul 2026" style date
+        r'(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})',
+    ]
+
+    for pat in patterns:
+        matches = re.findall(pat, text)
+        for m in matches:
+            try:
+                d, mon, yr = int(m[0]), MONTH_MAP.get(m[1][:3]), int(m[2])
+                if mon and 2025 <= yr <= 2030 and 1 <= d <= 31:
+                    return date(yr, mon, d).isoformat()
+            except Exception:
+                continue
+    return None
+
+
+def deadline_status(closing_date_str):
+    """Returns: 'closed', 'urgent' (<=7d), 'soon' (8-30d), 'future', or None."""
+    if not closing_date_str:
+        return None
+    try:
+        cd = date.fromisoformat(closing_date_str)
+        today = date.today()
+        delta = (cd - today).days
+        if delta < 0:
+            return 'closed'
+        elif delta <= 7:
+            return 'urgent'
+        elif delta <= 30:
+            return 'soon'
+        else:
+            return 'future'
+    except Exception:
+        return None
 
 # ─── Moat Scorer v2.2 ──────────────────────────────────────────────────
 
@@ -235,13 +305,21 @@ def ingest_projects(csv_text, run_id, db):
         total += 1
         h = make_hash(row)
         scores = score_project(row)
+
+        # Extract closing date from stage field
+        stage_text = row.get("stage", "") + " " + row.get("notes", "")
+        closing_date = extract_closing_date(stage_text)
+        ds = deadline_status(closing_date)
+        is_closed = 1 if ds == 'closed' else 0
+
         existing = db.execute("SELECT id, first_seen_at FROM projects WHERE project_hash = ?", (h,)).fetchone()
 
         if existing:
             db.execute("""UPDATE projects SET
                 doability_score=?, verdict=?, action_bucket=?, moats=?, moat_count=?,
                 risk_flags=?, commodity=?, last_seen_at=?, run_id=?,
-                stage=?, opportunity_type=?, priority_score=?, signal_summary=?, notes=?, active=?
+                stage=?, opportunity_type=?, priority_score=?, signal_summary=?, notes=?, active=?,
+                closing_date=?, is_closed=?
                 WHERE project_hash=?""",
                 (scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
@@ -249,6 +327,7 @@ def ingest_projects(csv_text, run_id, db):
                  row.get("stage", ""), row.get("opportunity_type", ""),
                  row.get("priority_score", ""), row.get("signal_summary", ""),
                  row.get("notes", ""), row.get("active", ""),
+                 closing_date, is_closed,
                  h))
         else:
             new_count += 1
@@ -258,15 +337,16 @@ def ingest_projects(csv_text, run_id, db):
                  stage, year, source_url, socI_relevance, opportunity_type, priority_score,
                  signal_summary, notes, active,
                  doability_score, verdict, action_bucket, moats, moat_count,
-                 risk_flags, commodity, first_seen_at, last_seen_at, run_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 risk_flags, commodity, first_seen_at, last_seen_at, run_id,
+                 closing_date, is_closed)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (h, vals["project_name"], vals["customer"], vals["location"],
                  vals["asset_type"], vals["sector"], vals["stage"], vals["year"],
                  vals["source_url"], vals["socI_relevance"], vals["opportunity_type"],
                  vals["priority_score"], vals["signal_summary"], vals["notes"], vals["active"],
                  scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
-                 now, now, run_id))
+                 now, now, run_id, closing_date, is_closed))
 
     return total, new_count
 
@@ -301,14 +381,23 @@ def dashboard():
 @app.route("/api/projects")
 def api_projects():
     db = get_db()
-    rows = db.execute("""
+    hide_closed = request.args.get("hide_closed", "1") == "1"
+    where = "WHERE active = 'true'"
+    if hide_closed:
+        where += " AND (is_closed = 0 OR is_closed IS NULL)"
+    rows = db.execute(f"""
         SELECT *, CASE WHEN first_seen_at = last_seen_at AND run_id = (
             SELECT id FROM runs ORDER BY created_at DESC LIMIT 1
         ) THEN 1 ELSE 0 END as is_new
-        FROM projects WHERE active = 'true'
+        FROM projects {where}
         ORDER BY doability_score DESC
     """).fetchall()
-    return jsonify([dict(r) for r in rows])
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["deadline_status"] = deadline_status(d.get("closing_date"))
+        result.append(d)
+    return jsonify(result)
 
 
 @app.route("/api/projects/new")
