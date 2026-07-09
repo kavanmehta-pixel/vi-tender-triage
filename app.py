@@ -155,11 +155,12 @@ def deadline_status(closing_date_str):
 # ─── Moat Scorer v2.2 ──────────────────────────────────────────────────
 
 MOATS = [
-    ("M1 off-grid/remote", r"\boff[- ]grid\b|no (mains|fixed|grid) power|unpowered|remote (site|area|location|asset)s?|isolated|no (comms|connectivity|network)|starlink|satellite|transmission (line|project|corridor)|wind farm|solar farm|\bbess\b|battery energy|pipeline|quarry|\bmine\b|mining|landfill|\bdam\b|greenfield|renewable energy zone|\brez\b|exploration"),
-    ("M2 solar", r"solar"),
-    ("M3 monitored outcome", r"24/7|monitor(ing|ed)|alarm response|command centre|control room|monitoring[- ]as[- ]a[- ]service|asial|virtual patrol|surveillance service"),
-    ("M4 AI analytics", r"\bai\b|analytics|anpr|number ?plate|licen[cs]e plate|illegal dumping|dumping detection|fire detection|smoke detection|traffic count|machine learning|computer vision|smart camera"),
-    ("M5 temp/rapid deploy", r"temporary|relocatable|redeployable|short[- ]term|rapid[- ]deploy|quick[- ]deploy|mobile (cctv|camera|surveillance)|trailer|construction (site|phase|period|work)|site security|laydown|compound|early works|enabling works|hire\b|event"),
+    ("M1 off-grid/remote", r"\boff[- ]grid\b|no (mains|fixed|grid) power|unpowered|remote (site|area|location|asset)s?|isolated|no (comms|connectivity|network)|starlink|satellite|transmission (line|project|corridor)|wind farm|solar farm|\bbess\b|battery energy|pipeline|quarry|\bmine\b|mining|landfill|\bdam\b|greenfield|renewable energy zone|\brez\b|exploration|remote area|rural area|off-site|off site"),
+    ("M2 solar", r"solar.powered|solar power|solar camera|solar panel|solar energy|solar surveillance|\bpv\b|photovoltaic"),
+    ("M3 monitored outcome", r"24/7|monitor(ing|ed)|alarm response|command centre|control room|monitoring[- ]as[- ]a[- ]service|asial|virtual patrol|surveillance service|remote monitoring|security monitoring|live monitoring|continuous monitoring"),
+    ("M4 AI analytics", r"\bai\b|artificial intelligence|analytics|anpr|number ?plate|licen[cs]e plate|illegal dumping|dumping detection|fire detection|smoke detection|machine learning|computer vision|smart camera|object detection|behavioural detection|heat detection|heatguard|enviroguard|envirosense"),
+    ("M5 temp/rapid deploy", r"temporary|relocatable|redeployable|short[- ]term|rapid[- ]deploy|quick[- ]deploy|mobile (cctv|camera|surveillance)|trailer|construction (site|phase|period|work)|site security|laydown|compound|early works|enabling works|hire\b|event security|pop[- ]up"),
+    ("M6 traffic/transport analytics", r"traffic count|traffic monitor|traffic management|vehicle count|traffic flow|traffic survey|traffic camera|vehicle detection|axle count|weigh[- ]in[- ]motion|wim|loadSure|load monitoring|freight|haulage|road safety camera|intersection|road count|pedestrian count|transport monitoring"),
 ]
 
 ASSET_MOAT = {
@@ -169,13 +170,15 @@ ASSET_MOAT = {
     "temporary_event_site_security": ["M5 temp/rapid deploy"],
     "remote_surveillance_monitoring": ["M3 monitored outcome"],
     "license_plate_recognition": ["M4 AI analytics"],
+    "traffic_monitoring": ["M6 traffic/transport analytics", "M4 AI analytics"],
+    "environmental_monitoring": ["M4 AI analytics", "M1 off-grid/remote"],
 }
 
 SECTOR_SCORE = {
     "construction": 6, "mining": 8, "mining/resources": 8, "energy": 6,
     "renewables": 8, "waste": 8, "local government": 5, "water": 5,
-    "water/wastewater": 5, "transport": 4, "rail": 4, "roads": 4,
-    "roads/tunnels/bridges": 4, "ports": 4, "infrastructure": 4,
+    "water/wastewater": 5, "transport": 6, "rail": 4, "roads": 6,
+    "roads/tunnels/bridges": 5, "ports": 4, "infrastructure": 4,
     "government": 2, "defence": 1, "agriculture": 6, "events": 7,
     "health": -6, "healthcare": -6, "education": -3, "corrections": -5,
 }
@@ -203,7 +206,7 @@ SOFT_FLAGS = [
     (r"repairs", -8, "repair scope"),
 ]
 
-MOAT_SCALE = {0: 0, 1: 14, 2: 30, 3: 42, 4: 50, 5: 56}
+MOAT_SCALE = {0: 0, 1: 14, 2: 30, 3: 42, 4: 50, 5: 56, 6: 60}
 
 def score_project(row):
     text = " ".join([
