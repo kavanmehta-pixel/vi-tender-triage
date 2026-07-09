@@ -78,7 +78,7 @@ tr.row.is-closed td{opacity:0.45}
 .loc{color:var(--dim);font-size:12px;white-space:nowrap}
 .foot{color:var(--dim);font-size:11.5px;margin-top:26px;line-height:1.7;border-top:1px solid var(--line);padding-top:14px}
 .loading{text-align:center;padding:60px;color:var(--muted);font-size:15px}
-@media(max-width:900px){.wrap{padding:14px}th:nth-child(7),td:nth-child(7),th:nth-child(8),td:nth-child(8){display:none}}
+@media(max-width:900px){.wrap{padding:14px}th:nth-child(6),td:nth-child(6),th:nth-child(7),td:nth-child(7){display:none}}
 </style>
 </head>
 <body>
@@ -123,14 +123,13 @@ tr.row.is-closed td{opacity:0.45}
   <th data-k="moat_count">Moats</th>
   <th data-k="sector">Sector</th>
   <th data-k="location">Loc</th>
-  <th data-k="priority_score">Tool</th>
 </tr></thead>
 <tbody id="tb"></tbody>
 </table>
 </div>
 
 <div class="foot">
-  Doability asks "does VI have a unique, defensible entry here" — not just "is it a CCTV job". Score core: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector and flags. <b style="color:var(--text)">New this week</b> shows projects first seen in the latest run. <b style="color:var(--text)">Tool score</b> is John's priority score from the discovery pipeline. Closed tenders are hidden by default — use "Show closed" to reveal them (dimmed).
+  Doability asks "does VI have a unique, defensible entry here" — not just "is it a CCTV job". Score core: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector and flags. <b style="color:var(--text)">New this week</b> shows projects first seen in the latest run. Closed tenders are hidden by default — use "Show closed" to reveal them (dimmed).
 </div>
 </div>
 
@@ -255,9 +254,8 @@ function render(){
       <td>${d.commodity==='yes'?'<span class="badge b-PASS">COMMODITY</span>':(d.moats||'').split('; ').filter(Boolean).map(m=>`<span class="moat" title="${esc(m)}">${m.slice(0,2)}</span>`).join('')}</td>
       <td>${esc(d.sector)}</td>
       <td class="loc">${esc(d.location)}</td>
-      <td>${d.priority_score||'—'}</td>
     </tr>
-    <tr class="detail" id="det${i}" style="display:none"><td colspan="9">
+    <tr class="detail" id="det${i}" style="display:none"><td colspan="8">
       ${d.closing_date?`<b>Deadline:</b> <span style="color:${d.deadline_status==='urgent'?'var(--urgent)':d.deadline_status==='soon'?'var(--soon)':'var(--muted)'}">${d.closing_date}</span> (${d.deadline_status||'unknown'})<br>`:''}
       ${d.moats?'<b>Unique angles:</b> '+d.moats.split('; ').map(t=>`<span class="tag pos">${esc(t)}</span>`).join('')+'<br>':'<b>Unique angles:</b> <span class="tag neg">none — commodity scope</span><br>'}
       ${d.risk_flags?'<b>Risk flags:</b> '+d.risk_flags.split('; ').map(t=>`<span class="tag neg">${esc(t)}</span>`).join('')+'<br>':''}
