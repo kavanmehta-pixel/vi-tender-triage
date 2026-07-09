@@ -78,6 +78,23 @@ def init_db():
         maybe_count INTEGER,
         pass_count INTEGER
     );
+    CREATE TABLE IF NOT EXISTS triage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_hash TEXT UNIQUE,
+        decision TEXT,
+        reason TEXT,
+        decided_by TEXT,
+        decided_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_hash TEXT,
+        author TEXT,
+        body TEXT,
+        created_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_triage_hash ON triage(project_hash);
+    CREATE INDEX IF NOT EXISTS idx_comments_hash ON comments(project_hash);
     CREATE INDEX IF NOT EXISTS idx_project_hash ON projects(project_hash);
     CREATE INDEX IF NOT EXISTS idx_run_id ON projects(run_id);
     CREATE INDEX IF NOT EXISTS idx_verdict ON projects(verdict);
@@ -89,6 +106,32 @@ def init_db():
         pass
     try:
         db.execute("ALTER TABLE projects ADD COLUMN is_closed INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        db.execute("""CREATE TABLE IF NOT EXISTS triage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_hash TEXT UNIQUE,
+            decision TEXT,
+            reason TEXT,
+            decided_by TEXT,
+            decided_at TEXT
+        )""")
+    except Exception:
+        pass
+    try:
+        db.execute("""CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_hash TEXT,
+            author TEXT,
+            body TEXT,
+            created_at TEXT
+        )""")
+    except Exception:
+        pass
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_triage_hash ON triage(project_hash)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_comments_hash ON comments(project_hash)")
     except Exception:
         pass
     db.commit()
@@ -374,6 +417,70 @@ def ingest_contacts(csv_text, run_id, db):
     return count
 
 
+# ─── Triage & Comments ──────────────────────────────────────────────────
+
+@app.route("/api/triage/<project_hash>", methods=["GET"])
+def get_triage(project_hash):
+    db = get_db()
+    t = db.execute("SELECT * FROM triage WHERE project_hash=?", (project_hash,)).fetchone()
+    comments = db.execute(
+        "SELECT * FROM comments WHERE project_hash=? ORDER BY created_at ASC",
+        (project_hash,)
+    ).fetchall()
+    return jsonify({
+        "triage": dict(t) if t else None,
+        "comments": [dict(c) for c in comments],
+    })
+
+@app.route("/api/triage/<project_hash>", methods=["POST"])
+def save_triage(project_hash):
+    db = get_db()
+    data = request.json
+    decision = data.get("decision", "")
+    reason = data.get("reason", "")
+    decided_by = data.get("decided_by", "")
+    now = datetime.utcnow().isoformat()
+    db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at)
+        VALUES (?,?,?,?,?)
+        ON CONFLICT(project_hash) DO UPDATE SET
+        decision=excluded.decision, reason=excluded.reason,
+        decided_by=excluded.decided_by, decided_at=excluded.decided_at""",
+        (project_hash, decision, reason, decided_by, now))
+    db.commit()
+    return jsonify({"ok": True, "decided_at": now})
+
+@app.route("/api/comments/<project_hash>", methods=["POST"])
+def add_comment(project_hash):
+    db = get_db()
+    data = request.json
+    body = data.get("body", "").strip()
+    author = data.get("author", "").strip() or "Kavan"
+    if not body:
+        return jsonify({"ok": False, "error": "empty"}), 400
+    now = datetime.utcnow().isoformat()
+    db.execute("INSERT INTO comments (project_hash, author, body, created_at) VALUES (?,?,?,?)",
+               (project_hash, author, body, now))
+    db.commit()
+    return jsonify({"ok": True, "created_at": now})
+
+@app.route("/api/comments/<project_hash>", methods=["DELETE"])
+def delete_comment(project_hash):
+    db = get_db()
+    comment_id = request.json.get("id")
+    db.execute("DELETE FROM comments WHERE id=? AND project_hash=?", (comment_id, project_hash))
+    db.commit()
+    return jsonify({"ok": True})
+
+@app.route("/api/triage/summary", methods=["GET"])
+def triage_summary():
+    db = get_db()
+    rows = db.execute("""
+        SELECT t.decision, COUNT(*) as n FROM triage t
+        GROUP BY t.decision
+    """).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
 # ─── Routes ─────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -385,15 +492,23 @@ def dashboard():
 def api_projects():
     db = get_db()
     hide_closed = request.args.get("hide_closed", "1") == "1"
-    where = "WHERE active = 'true'"
+    where = "WHERE p.active = 'true'"
     if hide_closed:
-        where += " AND (is_closed = 0 OR is_closed IS NULL)"
+        where += " AND (p.is_closed = 0 OR p.is_closed IS NULL)"
     rows = db.execute(f"""
-        SELECT *, CASE WHEN first_seen_at = last_seen_at AND run_id = (
-            SELECT id FROM runs ORDER BY created_at DESC LIMIT 1
-        ) THEN 1 ELSE 0 END as is_new
-        FROM projects {where}
-        ORDER BY doability_score DESC
+        SELECT p.*,
+            CASE WHEN p.first_seen_at = p.last_seen_at AND p.run_id = (
+                SELECT id FROM runs ORDER BY created_at DESC LIMIT 1
+            ) THEN 1 ELSE 0 END as is_new,
+            t.decision as triage_decision,
+            t.reason as triage_reason,
+            t.decided_by as triage_decided_by,
+            t.decided_at as triage_decided_at,
+            (SELECT COUNT(*) FROM comments c WHERE c.project_hash = p.project_hash) as comment_count
+        FROM projects p
+        LEFT JOIN triage t ON t.project_hash = p.project_hash
+        {where}
+        ORDER BY p.doability_score DESC
     """).fetchall()
     result = []
     for r in rows:

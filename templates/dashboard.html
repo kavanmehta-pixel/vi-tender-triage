@@ -6,21 +6,24 @@
 <title>VI Tender Doability Triage</title>
 <style>
 :root{
-  --bg:#0d1117;--panel:#151b24;--panel2:#1b2330;--line:#26303f;
+  --bg:#0d1117;--panel:#151b24;--panel2:#1b2330;--panel3:#212c3d;--line:#26303f;
   --text:#e6ecf4;--muted:#8b98ab;--dim:#5c6a7e;
   --amber:#f5a623;--amber-dim:rgba(245,166,35,.14);
   --go:#2ecc8f;--go-dim:rgba(46,204,143,.13);
   --maybe:#f5a623;--maybe-dim:rgba(245,166,35,.13);
   --pass:#e05563;--pass-dim:rgba(224,85,99,.12);
   --mon:#5b9dd9;--bd:#a78bfa;--new:#3b82f6;
-  --urgent:#ff4d4d;--soon:#f97316;--closed:#4a5568;
+  --urgent:#ff4d4d;--soon:#f97316;
+  /* triage colours */
+  --t-pass:#e05563;--t-pass-dim:rgba(224,85,99,.12);
+  --t-philip:#a78bfa;--t-philip-dim:rgba(167,139,250,.12);
+  --t-full:#2ecc8f;--t-full-dim:rgba(46,204,143,.12);
 }
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px}
 .wrap{max-width:1560px;margin:0 auto;padding:24px 28px 80px}
 header{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:18px}
-h1{font-size:21px;font-weight:700}
-h1 span{color:var(--amber)}
+h1{font-size:21px;font-weight:700}h1 span{color:var(--amber)}
 .sub{color:var(--muted);font-size:12.5px;margin-top:5px;max-width:860px;line-height:1.5}
 .stamp{color:var(--dim);font-size:11.5px;text-align:right;line-height:1.6}
 .stamp a{color:var(--amber);text-decoration:none;font-weight:600}
@@ -31,54 +34,106 @@ h1 span{color:var(--amber)}
 .view-toggle button:last-child{border-radius:0 7px 7px 0;border-left:none}
 .view-toggle button.on{background:var(--amber-dim);color:var(--amber);border-color:var(--amber)}
 .new-badge{background:var(--new);color:#fff;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:6px;font-weight:700}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:18px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:13px 15px;cursor:pointer;transition:border-color .15s}
-.card:hover{border-color:var(--amber)}
-.card.on{border-color:var(--amber);background:var(--amber-dim)}
-.card .n{font-size:25px;font-weight:800;line-height:1.1}
-.card .l{font-size:10.5px;color:var(--muted);margin-top:3px;text-transform:uppercase;letter-spacing:.5px}
-.n.go{color:var(--go)}.n.maybe{color:var(--maybe)}.n.pass{color:var(--pass)}.n.mon{color:var(--mon)}.n.bd{color:var(--bd)}.n.hot{color:var(--amber)}.n.new{color:var(--new)}.n.urgent{color:var(--urgent)}
+.card:hover{border-color:var(--amber)}.card.on{border-color:var(--amber);background:var(--amber-dim)}
+.card .n{font-size:25px;font-weight:800;line-height:1.1}.card .l{font-size:10.5px;color:var(--muted);margin-top:3px;text-transform:uppercase;letter-spacing:.5px}
+.n.go{color:var(--go)}.n.maybe{color:var(--maybe)}.n.pass{color:var(--pass)}.n.mon{color:var(--mon)}.n.bd{color:var(--bd)}.n.hot{color:var(--amber)}.n.new{color:var(--new)}.n.urgent{color:var(--urgent)}.n.philip{color:var(--t-philip)}.n.full{color:var(--t-full)}
 .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
 input[type=search],select{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:8px 12px;font-size:13px;outline:none}
 input[type=search]{flex:1;min-width:220px}
 input[type=search]:focus,select:focus{border-color:var(--amber)}
-.toggle-closed{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);cursor:pointer;padding:7px 12px;background:var(--panel);border:1px solid var(--line);border-radius:7px;white-space:nowrap}
-.toggle-closed input{cursor:pointer;width:14px;height:14px}
-.toggle-closed.active{border-color:var(--urgent);color:var(--urgent)}
+.toggle-label{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);cursor:pointer;padding:7px 12px;background:var(--panel);border:1px solid var(--line);border-radius:7px;white-space:nowrap}
+.toggle-label input{cursor:pointer;width:14px;height:14px}
+.toggle-label.active{border-color:var(--urgent);color:var(--urgent)}
 .count{color:var(--muted);font-size:12.5px;margin-left:auto;white-space:nowrap}
 table{width:100%;border-collapse:collapse}
 th{position:sticky;top:0;background:var(--panel2);color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.6px;text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap;z-index:2}
 th:hover{color:var(--text)}
 td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
-tr.row{cursor:pointer}
-tr.row:hover td{background:rgba(255,255,255,.025)}
+tr.row{cursor:pointer}tr.row:hover td{background:rgba(255,255,255,.025)}
 tr.row.is-new td{border-left:3px solid var(--new)}
-tr.row.is-closed td{opacity:0.45}
+tr.row.is-closed td{opacity:.45}
+tr.row.triaged-pass td{border-left:3px solid var(--t-pass)}
+tr.row.triaged-philip td{border-left:3px solid var(--t-philip)}
+tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .pname{font-weight:600;max-width:380px;line-height:1.4}
-.pname a{color:var(--text);text-decoration:none}
-.pname a:hover{color:var(--amber);text-decoration:underline}
+.pname a{color:var(--text);text-decoration:none}.pname a:hover{color:var(--amber);text-decoration:underline}
 .cust{color:var(--muted);font-size:12px;margin-top:2px}
 .new-dot{display:inline-block;width:7px;height:7px;background:var(--new);border-radius:50%;margin-right:5px;vertical-align:middle}
 .badge{display:inline-block;padding:2.5px 9px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.4px}
 .b-GO{background:var(--go-dim);color:var(--go)}.b-MAYBE{background:var(--maybe-dim);color:var(--maybe)}.b-PASS{background:var(--pass-dim);color:var(--pass)}
 .b-act{background:rgba(46,204,143,.1);color:var(--go)}.b-mon{background:rgba(91,157,217,.12);color:var(--mon)}.b-bd{background:rgba(167,139,250,.12);color:var(--bd)}.b-rev{background:rgba(139,152,171,.12);color:var(--muted)}
+.b-t-pass{background:var(--t-pass-dim);color:var(--t-pass);border:1px solid rgba(224,85,99,.3)}
+.b-t-philip{background:var(--t-philip-dim);color:var(--t-philip);border:1px solid rgba(167,139,250,.3)}
+.b-t-full{background:var(--t-full-dim);color:var(--t-full);border:1px solid rgba(46,204,143,.3)}
 .dl-urgent{display:inline-flex;align-items:center;gap:4px;background:rgba(255,77,77,.15);color:var(--urgent);border:1px solid rgba(255,77,77,.3);border-radius:12px;padding:2px 8px;font-size:11px;font-weight:700;white-space:nowrap}
 .dl-soon{display:inline-flex;align-items:center;gap:4px;background:rgba(249,115,22,.12);color:var(--soon);border:1px solid rgba(249,115,22,.3);border-radius:12px;padding:2px 8px;font-size:11px;font-weight:700;white-space:nowrap}
-.dl-closed{display:inline-flex;align-items:center;gap:4px;background:rgba(74,85,104,.2);color:var(--closed);border:1px solid rgba(74,85,104,.3);border-radius:12px;padding:2px 8px;font-size:11px;font-weight:600;white-space:nowrap;text-decoration:line-through}
+.dl-closed{display:inline-flex;align-items:center;gap:4px;background:rgba(74,85,104,.2);color:#4a5568;border:1px solid rgba(74,85,104,.3);border-radius:12px;padding:2px 8px;font-size:11px;text-decoration:line-through;white-space:nowrap}
 .dl-future{color:var(--dim);font-size:11px;white-space:nowrap}
-.scorecell{min-width:110px}
+.scorecell{min-width:100px}
 .bar{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:5px}
 .bar i{display:block;height:100%;border-radius:3px}
 .snum{font-weight:800;font-size:15px}
 .moat{display:inline-block;background:rgba(46,204,143,.12);color:var(--go);border:1px solid rgba(46,204,143,.3);border-radius:4px;padding:1px 5px;margin-right:3px;font-size:10.5px;font-weight:700}
-.detail td{background:var(--panel);font-size:12.5px;color:var(--muted);line-height:1.6;padding:14px 16px}
-.detail b{color:var(--text)}
+.comment-dot{display:inline-flex;align-items:center;gap:3px;background:rgba(91,157,217,.12);color:var(--mon);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:600;margin-left:4px}
+
+/* ── Detail panel ── */
+.detail td{background:var(--panel);padding:0;border-bottom:1px solid var(--line)}
+.detail-inner{padding:16px 20px;display:grid;grid-template-columns:1fr 320px;gap:20px}
+.detail-left{}
+.detail-section{margin-bottom:14px}
+.detail-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
 .tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:2px 8px;margin:2px 3px 2px 0;font-size:11.5px}
 .tag.pos{color:var(--go);border-color:rgba(46,204,143,.3)}.tag.neg{color:var(--pass);border-color:rgba(224,85,99,.3)}
+.detail-text{font-size:12.5px;color:var(--muted);line-height:1.6}
+.detail-text b{color:var(--text)}
+
+/* ── Triage panel ── */
+.triage-panel{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px}
+.triage-title{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:12px}
+.triage-opts{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.triage-opt{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1.5px solid var(--line);background:var(--panel);cursor:pointer;transition:all .15s;text-align:left;width:100%}
+.triage-opt:hover{border-color:var(--amber)}
+.triage-opt.selected-pass{border-color:var(--t-pass);background:var(--t-pass-dim)}
+.triage-opt.selected-philip{border-color:var(--t-philip);background:var(--t-philip-dim)}
+.triage-opt.selected-full{border-color:var(--t-full);background:var(--t-full-dim)}
+.triage-opt-icon{font-size:18px;flex-shrink:0;margin-top:1px}
+.triage-opt-body{}
+.triage-opt-name{font-size:13px;font-weight:700;color:var(--text)}
+.triage-opt-desc{font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.4}
+.triage-reason{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:9px 11px;font-size:13px;font-family:inherit;resize:vertical;min-height:60px;outline:none;margin-bottom:10px}
+.triage-reason:focus{border-color:var(--amber)}
+.triage-reason::placeholder{color:var(--dim)}
+.triage-save{background:var(--amber);color:#000;border:none;border-radius:7px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s}
+.triage-save:hover{opacity:.85}
+.triage-saved{font-size:11.5px;color:var(--go);margin-left:10px;opacity:0;transition:opacity .3s}
+.triage-saved.show{opacity:1}
+.triage-decided{font-size:11px;color:var(--dim);margin-top:8px}
+
+/* ── Comments ── */
+.comments-section{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.comments-list{display:flex;flex-direction:column;gap:8px;margin-bottom:10px;max-height:200px;overflow-y:auto}
+.comment-item{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:9px 11px}
+.comment-meta{font-size:10.5px;color:var(--dim);margin-bottom:4px;display:flex;justify-content:space-between}
+.comment-meta .del{cursor:pointer;color:var(--pass);opacity:.5}.comment-meta .del:hover{opacity:1}
+.comment-body{font-size:12.5px;color:var(--muted);line-height:1.5}
+.comment-input-row{display:flex;gap:8px}
+.comment-input{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:8px 11px;font-size:13px;font-family:inherit;outline:none}
+.comment-input:focus{border-color:var(--amber)}
+.comment-input::placeholder{color:var(--dim)}
+.comment-send{background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;transition:all .12s;white-space:nowrap}
+.comment-send:hover{border-color:var(--amber);color:var(--amber)}
+.author-input{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:8px 11px;font-size:13px;font-family:inherit;outline:none;width:110px}
+.author-input:focus{border-color:var(--amber)}
 .loc{color:var(--dim);font-size:12px;white-space:nowrap}
-.foot{color:var(--dim);font-size:11.5px;margin-top:26px;line-height:1.7;border-top:1px solid var(--line);padding-top:14px}
 .loading{text-align:center;padding:60px;color:var(--muted);font-size:15px}
-@media(max-width:900px){.wrap{padding:14px}th:nth-child(6),td:nth-child(6),th:nth-child(7),td:nth-child(7){display:none}}
+.foot{color:var(--dim);font-size:11.5px;margin-top:26px;line-height:1.7;border-top:1px solid var(--line);padding-top:14px}
+@media(max-width:900px){
+  .wrap{padding:14px}
+  .detail-inner{grid-template-columns:1fr}
+  th:nth-child(6),td:nth-child(6),th:nth-child(7),td:nth-child(7){display:none}
+}
 </style>
 </head>
 <body>
@@ -86,7 +141,7 @@ tr.row.is-closed td{opacity:0.45}
 <header>
   <div>
     <h1>VI Tender <span>Doability Triage</span></h1>
-    <div class="sub">Moat-scored: <b style="color:var(--text)">M1</b> off-grid/remote · <b style="color:var(--text)">M2</b> solar · <b style="color:var(--text)">M3</b> monitored outcome · <b style="color:var(--text)">M4</b> AI analytics · <b style="color:var(--text)">M5</b> temp/rapid deploy · <b style="color:var(--text)">M6</b> traffic/transport analytics. Zero moats = commodity (race to the bottom) — capped, never GO.</div>
+    <div class="sub">Moat-scored: <b style="color:var(--text)">M1</b> off-grid/remote · <b style="color:var(--text)">M2</b> solar · <b style="color:var(--text)">M3</b> monitored outcome · <b style="color:var(--text)">M4</b> AI analytics · <b style="color:var(--text)">M5</b> temp/rapid deploy · <b style="color:var(--text)">M6</b> traffic/transport analytics. Zero moats = commodity — capped, never GO.</div>
   </div>
   <div class="stamp" id="stamp">Loading…<br><a href="/upload">Upload CSVs</a></div>
 </header>
@@ -101,13 +156,12 @@ tr.row.is-closed td{opacity:0.45}
 <div class="toolbar">
   <input type="search" id="q" placeholder="Search project, customer, sector, moat…">
   <select id="fVerdict"><option value="">All verdicts</option><option>GO</option><option>MAYBE</option><option>PASS</option></select>
-  <select id="fAction"><option value="">All buckets</option><option value="ACT NOW (open)">Act now</option><option value="MONITOR (pre-market)">Monitor</option><option value="BD PLAY (sell direct)">BD play</option><option value="REVIEW">Review</option></select>
+  <select id="fAction"><option value="">All buckets</option><option value="ACT NOW (open)">Act now</option><option value="MONITOR (pre-market)">Monitor</option><option value="BD PLAY (sell direct)">BD play</option></select>
   <select id="fDeadline"><option value="">All deadlines</option><option value="urgent">🔴 Closes ≤7 days</option><option value="soon">🟠 Closes ≤30 days</option><option value="future">Future</option><option value="closed">Closed</option></select>
+  <select id="fTriage"><option value="">All triage</option><option value="pass">⛔ Pass</option><option value="philip">💬 Philip reach-out</option><option value="full">✅ Full tender</option><option value="none">Not yet triaged</option></select>
   <select id="fSector"><option value="">All sectors</option></select>
   <select id="fLoc"><option value="">All locations</option></select>
-  <label class="toggle-closed" id="closedToggle">
-    <input type="checkbox" id="showClosed" onchange="toggleClosed()"> Show closed tenders
-  </label>
+  <label class="toggle-label" id="closedToggle"><input type="checkbox" id="showClosed" onchange="toggleClosed()"> Show closed</label>
   <span class="count" id="count"></span>
 </div>
 
@@ -129,21 +183,24 @@ tr.row.is-closed td{opacity:0.45}
 </div>
 
 <div class="foot">
-  Doability asks "does VI have a unique, defensible entry here" — not just "is it a CCTV job". Score core: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector and flags. <b style="color:var(--text)">New this week</b> shows projects first seen in the latest run. Closed tenders are hidden by default — use "Show closed" to reveal them (dimmed).
+  Doability: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector/flags. <b style="color:var(--text)">Triage decisions and comments persist</b> — re-uploading CSVs won't erase them. Decision key: <span class="badge b-t-full">Full tender</span> → bespoke response · <span class="badge b-t-philip">Philip reach-out</span> → relationship/awareness · <span class="badge b-t-pass">Pass</span> → skip.
 </div>
 </div>
 
 <script>
-let DATA=[], DATA_NEW=[], DATA_ALL=[], view='all', sortK=null, sortAsc=false;
-let filt={q:'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:''};
+let DATA=[], DATA_NEW=[], view='all', sortK=null, sortAsc=false;
+let filt={q:'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:'',triage:''};
 let showClosed=false;
 const rank={GO:0,MAYBE:1,PASS:2};
+const TRIAGE_OPTS=[
+  {key:'pass',   icon:'⛔', name:'Pass on this tender',       desc:'Not worth pursuing — scope mismatch, commodity play, or too much competition',   cls:'selected-pass',   badge:'b-t-pass',   label:'Pass'},
+  {key:'philip', icon:'💬', name:'Philip reaches out',         desc:'Relationship/awareness play — Philip makes contact, no full tender response needed', cls:'selected-philip', badge:'b-t-philip', label:'Philip reach-out'},
+  {key:'full',   icon:'✅', name:'Full tender response',        desc:'Strong fit — go all in with a bespoke response via Ariel\'s tool + subject matter review', cls:'selected-full',   badge:'b-t-full',   label:'Full tender'},
+];
 
 async function loadData(withClosed){
-  const param = withClosed ? '?hide_closed=0' : '?hide_closed=1';
-  return fetch('/api/projects'+param).then(r=>r.json());
+  return fetch('/api/projects'+(withClosed?'?hide_closed=0':'?hide_closed=1')).then(r=>r.json());
 }
-
 async function load(){
   const [all, nw, stats] = await Promise.all([
     loadData(false),
@@ -152,10 +209,8 @@ async function load(){
   ]);
   DATA=all; DATA_NEW=nw;
   document.getElementById('newBadge').textContent=nw.length;
-  const lr = stats.latest_run;
-  document.getElementById('stamp').innerHTML = (lr
-    ? `Last run: ${lr.created_at.slice(0,10)} · ${lr.new_projects} new · ${lr.total_projects} total`
-    : 'No runs yet') + '<br><a href="/upload">Upload CSVs</a>';
+  const lr=stats.latest_run;
+  document.getElementById('stamp').innerHTML=(lr?`Last run: ${lr.created_at.slice(0,10)} · ${lr.new_projects} new · ${lr.total_projects} total`:'No runs yet')+'<br><a href="/upload">Upload CSVs</a>';
   const secs=[...new Set(DATA.map(d=>d.sector).filter(Boolean))].sort();
   const locs=[...new Set(DATA.map(d=>d.location).filter(Boolean))].sort();
   secs.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;document.getElementById('fSector').append(o)});
@@ -164,35 +219,31 @@ async function load(){
   document.getElementById('tbl').style.display='';
   drawCards(); render();
 }
-
 async function toggleClosed(){
-  showClosed = document.getElementById('showClosed').checked;
-  document.getElementById('closedToggle').className = 'toggle-closed' + (showClosed?' active':'');
-  DATA = await loadData(showClosed);
-  drawCards(); render();
+  showClosed=document.getElementById('showClosed').checked;
+  document.getElementById('closedToggle').className='toggle-label'+(showClosed?' active':'');
+  DATA=await loadData(showClosed); drawCards(); render();
 }
-
 function setView(v){
   view=v;
   document.getElementById('btnAll').className=v==='all'?'on':'';
   document.getElementById('btnNew').className=v==='new'?'on':'';
   filt.card=''; drawCards(); render();
 }
-
-function src(){ return view==='new'?DATA_NEW:DATA; }
+function src(){return view==='new'?DATA_NEW:DATA;}
 
 const cardsDef=[
-  {id:'gonow',label:'GO × Act now',cls:'hot',test:d=>d.verdict==='GO'&&(d.action_bucket||'').startsWith('ACT')},
-  {id:'urgent',label:'Closes ≤7 days',cls:'urgent',test:d=>d.deadline_status==='urgent'},
-  {id:'soon',label:'Closes ≤30 days',cls:'hot',test:d=>d.deadline_status==='soon'},
-  {id:'go',label:'GO',cls:'go',test:d=>d.verdict==='GO'},
-  {id:'maybe',label:'MAYBE',cls:'maybe',test:d=>d.verdict==='MAYBE'},
-  {id:'pass',label:'PASS',cls:'pass',test:d=>d.verdict==='PASS'},
-  {id:'mon',label:'Monitor',cls:'mon',test:d=>(d.action_bucket||'').startsWith('MONITOR')},
-  {id:'bd',label:'BD plays',cls:'bd',test:d=>(d.action_bucket||'').startsWith('BD')},
-  {id:'com',label:'Commodity',cls:'pass',test:d=>d.commodity==='yes'},
+  {id:'gonow', label:'GO × Act now', cls:'hot',    test:d=>d.verdict==='GO'&&(d.action_bucket||'').startsWith('ACT')},
+  {id:'urgent',label:'Closes ≤7 days',cls:'urgent', test:d=>d.deadline_status==='urgent'},
+  {id:'soon',  label:'Closes ≤30 days',cls:'hot',   test:d=>d.deadline_status==='soon'},
+  {id:'go',    label:'GO',            cls:'go',     test:d=>d.verdict==='GO'},
+  {id:'maybe', label:'MAYBE',         cls:'maybe',  test:d=>d.verdict==='MAYBE'},
+  {id:'pass',  label:'PASS',          cls:'pass',   test:d=>d.verdict==='PASS'},
+  {id:'mon',   label:'Monitor',       cls:'mon',    test:d=>(d.action_bucket||'').startsWith('MONITOR')},
+  {id:'bd',    label:'BD plays',      cls:'bd',     test:d=>(d.action_bucket||'').startsWith('BD')},
+  {id:'philip',label:'Philip reach-out',cls:'philip',test:d=>d.triage_decision==='philip'},
+  {id:'full',  label:'Full tender',   cls:'full',   test:d=>d.triage_decision==='full'},
 ];
-
 function drawCards(){
   const s=src();
   document.getElementById('cards').innerHTML=cardsDef.map(c=>
@@ -202,27 +253,34 @@ function drawCards(){
 function toggleCard(id){filt.card=filt.card===id?'':id;drawCards();render();}
 
 function scoreColor(s){return s>=70?'var(--go)':(s>=50?'var(--maybe)':'var(--pass)');}
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');}
-
+function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
 function dlBadge(d){
-  const ds = d.deadline_status, cd = d.closing_date;
-  if(!ds && !cd) return '<span style="color:var(--dim);font-size:11px">—</span>';
-  const label = cd ? cd : '';
-  if(ds==='closed') return `<span class="dl-closed">${label}</span>`;
-  if(ds==='urgent') return `<span class="dl-urgent">🔴 ${label}</span>`;
-  if(ds==='soon')   return `<span class="dl-soon">🟠 ${label}</span>`;
-  return `<span class="dl-future">${label}</span>`;
+  const ds=d.deadline_status,cd=d.closing_date;
+  if(!ds&&!cd) return '<span style="color:var(--dim);font-size:11px">—</span>';
+  if(ds==='closed') return `<span class="dl-closed">${cd}</span>`;
+  if(ds==='urgent') return `<span class="dl-urgent">🔴 ${cd}</span>`;
+  if(ds==='soon')   return `<span class="dl-soon">🟠 ${cd}</span>`;
+  return `<span class="dl-future">${cd}</span>`;
+}
+function triageBadge(d){
+  if(!d.triage_decision) return '';
+  const o=TRIAGE_OPTS.find(x=>x.key===d.triage_decision);
+  return o?`<span class="badge ${o.badge}" style="margin-left:6px">${o.label}</span>`:'';
 }
 
 function rows(){
   let r=src().filter(d=>{
-    if(!showClosed && d.is_closed) return false;
+    if(!showClosed&&d.is_closed) return false;
     if(filt.card){const c=cardsDef.find(x=>x.id===filt.card);if(!c.test(d))return false;}
     if(filt.verdict&&d.verdict!==filt.verdict)return false;
     if(filt.action&&d.action_bucket!==filt.action)return false;
     if(filt.sector&&d.sector!==filt.sector)return false;
     if(filt.loc&&d.location!==filt.loc)return false;
     if(filt.deadline&&d.deadline_status!==filt.deadline)return false;
+    if(filt.triage){
+      if(filt.triage==='none'&&d.triage_decision)return false;
+      if(filt.triage!=='none'&&d.triage_decision!==filt.triage)return false;
+    }
     if(filt.q){const t=(d.project_name+' '+d.customer+' '+d.sector+' '+d.signal_summary+' '+(d.moats||'')+' '+(d.risk_flags||'')).toLowerCase();if(!t.includes(filt.q))return false;}
     return true;
   });
@@ -230,7 +288,7 @@ function rows(){
     let x=a[sortK],y=b[sortK];
     if(sortK==='verdict'){x=rank[x];y=rank[y];}
     if(sortK==='closing_date'){x=x||'9999';y=y||'9999';}
-    if(sortK==='doability_score'||sortK==='priority_score'||sortK==='moat_count'){x=+x||0;y=+y||0;}
+    if(sortK==='doability_score'||sortK==='moat_count'){x=+x||0;y=+y||0;}
     return(x<y?-1:x>y?1:0)*(sortAsc?1:-1);
   });}
   return r;
@@ -239,12 +297,14 @@ function rows(){
 function render(){
   const r=rows();
   document.getElementById('count').textContent=r.length+' of '+src().length;
-  document.getElementById('tb').innerHTML=r.map((d,i)=>{
+  const tbody=document.getElementById('tb');
+  tbody.innerHTML=r.map((d,i)=>{
     const b=(d.action_bucket||'').startsWith('ACT')?'b-act':(d.action_bucket||'').startsWith('MON')?'b-mon':(d.action_bucket||'').startsWith('BD')?'b-bd':'b-rev';
     const isNew=d.is_new||view==='new';
-    const isClosed=d.is_closed;
-    return `<tr class="row ${isNew?'is-new':''} ${isClosed?'is-closed':''}" onclick="tog(${i})">
-      <td class="pname">${isNew?'<span class="new-dot"></span>':''}${d.source_url?`<a href="${esc(d.source_url)}" target="_blank" onclick="event.stopPropagation()">${esc(d.project_name)}</a>`:esc(d.project_name)}
+    const triCls=d.triage_decision?`triaged-${d.triage_decision}`:'';
+    const commentBadge=d.comment_count>0?`<span class="comment-dot">💬${d.comment_count}</span>`:'';
+    return `<tr class="row ${isNew?'is-new':''} ${d.is_closed?'is-closed':''} ${triCls}" onclick="tog(this,'${esc(d.project_hash)}',${i})">
+      <td class="pname">${isNew?'<span class="new-dot"></span>':''}${d.source_url?`<a href="${esc(d.source_url)}" target="_blank" onclick="event.stopPropagation()">${esc(d.project_name)}</a>`:esc(d.project_name)}${triageBadge(d)}${commentBadge}
         <div class="cust">${esc(d.customer)}</div></td>
       <td class="scorecell"><span class="snum" style="color:${scoreColor(d.doability_score)}">${d.doability_score}</span>
         <div class="bar"><i style="width:${d.doability_score}%;background:${scoreColor(d.doability_score)}"></i></div></td>
@@ -256,24 +316,141 @@ function render(){
       <td class="loc">${esc(d.location)}</td>
     </tr>
     <tr class="detail" id="det${i}" style="display:none"><td colspan="8">
-      ${d.closing_date?`<b>Deadline:</b> <span style="color:${d.deadline_status==='urgent'?'var(--urgent)':d.deadline_status==='soon'?'var(--soon)':'var(--muted)'}">${d.closing_date}</span> (${d.deadline_status||'unknown'})<br>`:''}
-      ${d.moats?'<b>Unique angles:</b> '+d.moats.split('; ').map(t=>`<span class="tag pos">${esc(t)}</span>`).join('')+'<br>':'<b>Unique angles:</b> <span class="tag neg">none — commodity scope</span><br>'}
-      ${d.risk_flags?'<b>Risk flags:</b> '+d.risk_flags.split('; ').map(t=>`<span class="tag neg">${esc(t)}</span>`).join('')+'<br>':''}
-      <b>Stage:</b> ${esc(d.stage)||'—'} · <b>Type:</b> ${esc(d.opportunity_type)||'—'} · <b>Asset:</b> ${esc(d.asset_type)} · <b>Year:</b> ${esc(d.year)}<br>
-      ${d.first_seen_at?'<b>First seen:</b> '+d.first_seen_at.slice(0,10)+' · <b>Last seen:</b> '+d.last_seen_at.slice(0,10)+'<br>':''}
-      ${esc(d.signal_summary)}
+      <div class="detail-inner">
+        <div class="detail-left">
+          ${d.closing_date?`<div class="detail-section"><div class="detail-label">Deadline</div><div class="detail-text" style="color:${d.deadline_status==='urgent'?'var(--urgent)':d.deadline_status==='soon'?'var(--soon)':'var(--muted)'}">${d.closing_date} (${d.deadline_status||'unknown'})</div></div>`:''}
+          <div class="detail-section">
+            <div class="detail-label">Unique angles</div>
+            <div>${d.moats?d.moats.split('; ').map(t=>`<span class="tag pos">${esc(t)}</span>`).join(''):'<span class="tag neg">none — commodity scope</span>'}</div>
+          </div>
+          ${d.risk_flags?`<div class="detail-section"><div class="detail-label">Risk flags</div><div>${d.risk_flags.split('; ').map(t=>`<span class="tag neg">${esc(t)}</span>`).join('')}</div></div>`:''}
+          <div class="detail-section">
+            <div class="detail-label">Details</div>
+            <div class="detail-text"><b>Stage:</b> ${esc(d.stage)||'—'} · <b>Type:</b> ${esc(d.opportunity_type)||'—'} · <b>Asset:</b> ${esc(d.asset_type)||'—'} · <b>Year:</b> ${esc(d.year)||'—'}<br>
+            ${d.first_seen_at?`<b>First seen:</b> ${d.first_seen_at.slice(0,10)} · <b>Last seen:</b> ${d.last_seen_at.slice(0,10)}<br>`:''}</div>
+          </div>
+          ${d.signal_summary?`<div class="detail-section"><div class="detail-label">Signal</div><div class="detail-text">${esc(d.signal_summary)}</div></div>`:''}
+        </div>
+        <div class="detail-right">
+          <div class="triage-panel" id="tp-${i}">
+            <div class="triage-title">Response decision</div>
+            <div class="triage-opts">
+              ${TRIAGE_OPTS.map(o=>`<button class="triage-opt ${d.triage_decision===o.key?o.cls+' '+o.cls:''}" onclick="selectTriage(${i},'${o.key}')" id="topt-${i}-${o.key}">
+                <span class="triage-opt-icon">${o.icon}</span>
+                <div class="triage-opt-body"><div class="triage-opt-name">${o.name}</div><div class="triage-opt-desc">${o.desc}</div></div>
+              </button>`).join('')}
+            </div>
+            <textarea class="triage-reason" id="treason-${i}" placeholder="Why? Add context for Michael, Danny and Robin…">${esc(d.triage_reason||'')}</textarea>
+            <div style="display:flex;align-items:center">
+              <button class="triage-save" onclick="saveTriage(${i},'${esc(d.project_hash)}')">Save decision</button>
+              <span class="triage-saved" id="tsaved-${i}">✓ Saved</span>
+            </div>
+            ${d.triage_decided_at?`<div class="triage-decided">Last saved ${d.triage_decided_at.slice(0,10)}${d.triage_decided_by?' by '+esc(d.triage_decided_by):''}</div>`:''}
+            <div class="comments-section">
+              <div class="detail-label" style="margin-bottom:8px">Notes & comments</div>
+              <div class="comments-list" id="clist-${i}"><div style="color:var(--dim);font-size:12px">Loading…</div></div>
+              <div class="comment-input-row">
+                <input class="author-input" id="cauthor-${i}" placeholder="Your name" value="Kavan">
+                <input class="comment-input" id="cinput-${i}" placeholder="Add a note…" onkeydown="if(event.key==='Enter')addComment(${i},'${esc(d.project_hash)}')">
+                <button class="comment-send" onclick="addComment(${i},'${esc(d.project_hash)}')">Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </td></tr>`;
   }).join('');
 }
-function tog(i){const e=document.getElementById('det'+i);e.style.display=e.style.display==='none'?'':'none';}
+
+// track selected triage per row index
+const selectedTriage={};
+
+function selectTriage(i, key){
+  selectedTriage[i]=key;
+  TRIAGE_OPTS.forEach(o=>{
+    const el=document.getElementById(`topt-${i}-${o.key}`);
+    if(el) el.className=`triage-opt ${key===o.key?o.cls:''}`;
+  });
+}
+
+async function saveTriage(i, hash){
+  const decision=selectedTriage[i]||'';
+  const reason=document.getElementById(`treason-${i}`).value;
+  const author=document.getElementById(`cauthor-${i}`)?.value||'Kavan';
+  await fetch(`/api/triage/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,reason,decided_by:author})});
+  const s=document.getElementById(`tsaved-${i}`);
+  s.classList.add('show');
+  setTimeout(()=>s.classList.remove('show'),2000);
+  // update local data
+  const d=DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
+  if(d){d.triage_decision=decision;d.triage_reason=reason;}
+  render();
+}
+
+async function loadComments(i, hash){
+  const res=await fetch(`/api/triage/${hash}`);
+  const data=await res.json();
+  const list=document.getElementById(`clist-${i}`);
+  if(!list) return;
+  // also set triage selection state
+  if(data.triage&&data.triage.decision&&!selectedTriage[i]){
+    selectedTriage[i]=data.triage.decision;
+    TRIAGE_OPTS.forEach(o=>{
+      const el=document.getElementById(`topt-${i}-${o.key}`);
+      if(el) el.className=`triage-opt ${data.triage.decision===o.key?o.cls:''}`;
+    });
+  }
+  if(!data.comments||data.comments.length===0){
+    list.innerHTML='<div style="color:var(--dim);font-size:12px">No notes yet.</div>';return;
+  }
+  list.innerHTML=data.comments.map(c=>`
+    <div class="comment-item">
+      <div class="comment-meta"><span><b>${esc(c.author)}</b> · ${c.created_at.slice(0,16).replace('T',' ')}</span>
+        <span class="del" onclick="deleteComment(${i},'${esc(hash)}',${c.id})">✕</span></div>
+      <div class="comment-body">${esc(c.body)}</div>
+    </div>`).join('');
+}
+
+async function addComment(i, hash){
+  const input=document.getElementById(`cinput-${i}`);
+  const body=input.value.trim();
+  if(!body) return;
+  const author=document.getElementById(`cauthor-${i}`)?.value||'Kavan';
+  await fetch(`/api/comments/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body,author})});
+  input.value='';
+  // update comment count locally
+  const d=DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
+  if(d) d.comment_count=(d.comment_count||0)+1;
+  loadComments(i,hash);
+}
+
+async function deleteComment(i, hash, commentId){
+  await fetch(`/api/comments/${hash}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:commentId})});
+  const d=DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
+  if(d&&d.comment_count>0) d.comment_count--;
+  loadComments(i,hash);
+}
+
+const openDetails={};
+function tog(trEl, hash, i){
+  const det=document.getElementById(`det${i}`);
+  const isOpen=det.style.display!=='none';
+  det.style.display=isOpen?'none':'';
+  if(!isOpen) loadComments(i,hash);
+}
 
 document.getElementById('q').oninput=e=>{filt.q=e.target.value.toLowerCase();render();};
 document.getElementById('fVerdict').onchange=e=>{filt.verdict=e.target.value;render();};
 document.getElementById('fAction').onchange=e=>{filt.action=e.target.value;render();};
 document.getElementById('fDeadline').onchange=e=>{filt.deadline=e.target.value;render();};
+document.getElementById('fTriage').onchange=e=>{filt.triage=e.target.value;render();};
 document.getElementById('fSector').onchange=e=>{filt.sector=e.target.value;render();};
 document.getElementById('fLoc').onchange=e=>{filt.loc=e.target.value;render();};
-document.querySelectorAll('th').forEach(th=>th.onclick=()=>{const k=th.dataset.k;if(sortK===k)sortAsc=!sortAsc;else{sortK=k;sortAsc=(k==='project_name'||k==='sector'||k==='location'||k==='closing_date');}render();});
+document.querySelectorAll('th').forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k;
+  if(sortK===k)sortAsc=!sortAsc;else{sortK=k;sortAsc=(k==='project_name'||k==='sector'||k==='location'||k==='closing_date');}
+  render();
+});
 load();
 </script>
 </body>
