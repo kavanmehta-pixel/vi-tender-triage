@@ -50,6 +50,18 @@ a{color:var(--amber)}
 <button id="btn" onclick="upload()">Score & Upload</button>
 
 <div class="result" id="res"></div>
+
+<div style="margin-top:36px;padding-top:24px;border-top:1px solid var(--line)">
+  <h1 style="font-size:16px">Step 2 <span>— Upload enriched summaries</span></h1>
+  <div class="sub">After the Tuesday Cowork run generates plain-English summaries, drop the enriched CSV here (must have <code>ai_summary</code> column). Matched to existing tenders by project name + customer — scores and triage decisions are untouched.</div>
+  <div class="field">
+    <label>enriched CSV <em>from the Cowork summary run</em></label>
+    <input type="file" id="fe" accept=".csv">
+  </div>
+  <button id="btnE" onclick="uploadEnriched()">Attach Summaries</button>
+  <div class="result" id="resE"></div>
+</div>
+
 <div class="back"><a href="/">← Back to dashboard</a></div>
 </div>
 
@@ -87,6 +99,31 @@ async function upload(){
     res.innerHTML = `<h3>Error</h3>${e.message}`;
   }
   btn.disabled = false; btn.textContent = 'Score & Upload';
+}
+
+async function uploadEnriched(){
+  const btn = document.getElementById('btnE');
+  const res = document.getElementById('resE');
+  btn.disabled = true; btn.textContent = 'Attaching…';
+  res.style.display = 'none';
+  const fe = document.getElementById('fe').files[0];
+  if(!fe){ alert('Select the enriched CSV'); btn.disabled=false; btn.textContent='Attach Summaries'; return; }
+  const fd = new FormData();
+  fd.append('enriched', fe);
+  try {
+    const r = await fetch('/api/upload-enriched', {method:'POST', body:fd});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error||'Upload failed');
+    res.className = 'result ok'; res.style.display = 'block';
+    res.innerHTML = `<h3>Summaries attached</h3>
+      <span class="stat" style="background:rgba(46,204,143,.12);color:var(--go)">Attached: ${d.summaries_attached}</span>
+      <span class="stat" style="background:rgba(224,85,99,.12);color:var(--pass)">Unmatched: ${d.unmatched}</span>
+      <br><br><a href="/">View dashboard →</a>`;
+  } catch(e) {
+    res.className = 'result err'; res.style.display = 'block';
+    res.innerHTML = `<h3>Error</h3>${e.message}`;
+  }
+  btn.disabled = false; btn.textContent = 'Attach Summaries';
 }
 </script>
 </body>

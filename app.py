@@ -1,10 +1,9 @@
-import os, json, csv, io, re, sqlite3, hashlib, secrets, threading
+import os, json, csv, io, re, sqlite3, hashlib, secrets
 from datetime import datetime, timedelta, date
 from flask import Flask, request, jsonify, render_template, g
 
 app = Flask(__name__)
 DB_PATH = os.environ.get("DB_PATH", "vi_triage.db")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "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")
 
 # ─── Database ───────────────────────────────────────────────────────────
 
@@ -255,86 +254,10 @@ def check_location_flag(location_text):
     return None, 0
 
 
-# ─── AI Summary Generator ────────────────────────────────────────────────
-
-SUMMARY_PROMPT = """You are a tender analyst for Vision Intelligence (VI), Australia's largest provider of solar-powered wireless surveillance cameras. VI's strengths: solar/off-grid deployment, 24/7 ASIAL-accredited monitoring, AI analytics (fire, dumping, ANPR), temporary/relocatable cameras for construction sites and remote assets. VI cannot do: fixed hardwired CCTV installation, access control, guarding, building services, maintenance of existing legacy systems.
-
-Given this tender/project, write a 3-sentence plain-English summary for the CEO (Robin) that:
-1. States what the project is and who the customer is (1 sentence)
-2. Explains specifically why it scored {score}/100 — which VI angles are present and which risks or flags pulled the score down (1 sentence)  
-3. States the concrete next action and any location or deadline concern (1 sentence)
-
-Be direct and specific. No fluff. Use plain language, not jargon. If the description is vague, say so explicitly.
-
-Project: {name}
-Customer: {customer}
-Location: {location}
-Type: {opp_type}
-Stage: {stage}
-Closing: {closing}
-Score: {score} ({verdict})
-Moats fired: {moats}
-Risk flags: {risk_flags}
-Location flag: {location_flag}
-Signal: {signal}
-
-Respond with ONLY the 3-sentence summary. No bullet points, no headers."""
-
-def generate_ai_summary(project):
-    """Call Claude to generate a plain-English summary. Returns string or None."""
-    try:
-        import urllib.request
-        prompt = SUMMARY_PROMPT.format(
-            name=project.get("project_name",""),
-            customer=project.get("customer",""),
-            location=project.get("location",""),
-            opp_type=project.get("opportunity_type",""),
-            stage=project.get("stage","")[:200],
-            closing=project.get("closing_date") or "unknown",
-            score=project.get("doability_score",""),
-            verdict=project.get("verdict",""),
-            moats=project.get("moats") or "none",
-            risk_flags=project.get("risk_flags") or "none",
-            location_flag=project.get("location_flag") or "none",
-            signal=(project.get("signal_summary") or "")[:400],
-        )
-        payload = json.dumps({
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 200,
-            "messages": [{"role": "user", "content": prompt}]
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=payload,
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            }
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-            return data["content"][0]["text"].strip()
-    except Exception as e:
-        print(f"Summary generation failed for {project.get('project_name','?')}: {e}")
-        return None
-
-
-def generate_summaries_async(hashes_and_projects):
-    """Run summary generation in a background thread for new projects only."""
-    def worker():
-        db = sqlite3.connect(DB_PATH)
-        for h, proj in hashes_and_projects:
-            existing = db.execute("SELECT ai_summary FROM projects WHERE project_hash=?", (h,)).fetchone()
-            if existing and existing[0]:
-                continue  # already has summary, skip
-            summary = generate_ai_summary(proj)
-            if summary:
-                db.execute("UPDATE projects SET ai_summary=? WHERE project_hash=?", (summary, h))
-                db.commit()
-        db.close()
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+# ─── AI Summary (generated externally by Cowork, stored here) ────────────
+# Summaries are NOT generated in this app. A weekly Cowork task reads the CSVs,
+# generates plain-English summaries, and uploads an enriched CSV via /upload-enriched.
+# This keeps all Anthropic API usage inside Cowork — no API key lives on Railway.
 
 MOATS = [
     ("M1 off-grid/remote", r"\boff[- ]grid\b|no (mains|fixed|grid) power|unpowered|remote (site|area|location|asset)s?|isolated|no (comms|connectivity|network)|starlink|satellite|transmission (line|project|corridor)|wind farm|solar farm|\bbess\b|battery energy|pipeline|quarry|\bmine\b|mining|landfill|\bdam\b|greenfield|renewable energy zone|\brez\b|exploration|remote area|rural area|off-site|off site"),
@@ -559,12 +482,6 @@ def ingest_projects(csv_text, run_id, db):
             new_for_summary.append((h, proj_data))
 
     db.commit()
-    # Fire off summary generation in background for new/unsummarised projects
-    # Only do GO and MAYBE to keep API costs down
-    priority = [(h, p) for h, p in new_for_summary if p.get("verdict") in ("GO","MAYBE")]
-    if priority:
-        generate_summaries_async(priority)
-
     return total, new_count
 
 
@@ -586,6 +503,26 @@ def ingest_contacts(csv_text, run_id, db):
              vals["email"], vals["phone"], vals["private_org"],
              run_id, now))
     return count
+
+
+def ingest_enriched(csv_text, db):
+    """Attach AI summaries from an enriched CSV (produced by the Tuesday Cowork run).
+    Matches on project_name + customer (same basis as make_hash). Only updates ai_summary."""
+    reader = csv.DictReader(io.StringIO(csv_text))
+    updated = 0
+    missing = 0
+    for row in reader:
+        summary = (row.get("ai_summary") or "").strip()
+        if not summary:
+            continue
+        h = make_hash(row)
+        res = db.execute("UPDATE projects SET ai_summary=? WHERE project_hash=?", (summary, h))
+        if res.rowcount:
+            updated += 1
+        else:
+            missing += 1
+    db.commit()
+    return updated, missing
 
 
 # ─── Triage & Comments ──────────────────────────────────────────────────
@@ -655,15 +592,21 @@ def triage_summary():
 @app.route("/api/summary/<project_hash>")
 def get_summary(project_hash):
     db = get_db()
-    row = db.execute("SELECT ai_summary, doability_score, verdict, moats, risk_flags, location_flag, project_name, customer, location, opportunity_type, stage, closing_date, signal_summary FROM projects WHERE project_hash=?", (project_hash,)).fetchone()
+    row = db.execute("SELECT ai_summary FROM projects WHERE project_hash=?", (project_hash,)).fetchone()
     if not row:
         return jsonify({"summary": None}), 404
-    if row["ai_summary"]:
-        return jsonify({"summary": row["ai_summary"], "ready": True})
-    # Not ready yet — trigger generation if not already running
-    proj = dict(row)
-    generate_summaries_async([(project_hash, proj)])
-    return jsonify({"summary": None, "ready": False})
+    return jsonify({"summary": row["ai_summary"], "ready": bool(row["ai_summary"])})
+
+
+@app.route("/api/upload-enriched", methods=["POST"])
+def api_upload_enriched():
+    db = get_db()
+    f = request.files.get("enriched")
+    if not f:
+        return jsonify({"ok": False, "error": "no file"}), 400
+    text = f.read().decode("utf-8-sig")
+    updated, missing = ingest_enriched(text, db)
+    return jsonify({"ok": True, "summaries_attached": updated, "unmatched": missing})
 
 
 # ─── Routes ─────────────────────────────────────────────────────────────
