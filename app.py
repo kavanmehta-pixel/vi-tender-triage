@@ -1,9 +1,10 @@
-import os, json, csv, io, re, sqlite3, hashlib, secrets
+import os, json, csv, io, re, sqlite3, hashlib, secrets, threading
 from datetime import datetime, timedelta, date
 from flask import Flask, request, jsonify, render_template, g
 
 app = Flask(__name__)
 DB_PATH = os.environ.get("DB_PATH", "vi_triage.db")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "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")
 
 # ─── Database ───────────────────────────────────────────────────────────
 
@@ -109,6 +110,14 @@ def init_db():
     except Exception:
         pass
     try:
+        db.execute("ALTER TABLE projects ADD COLUMN ai_summary TEXT")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE projects ADD COLUMN location_flag TEXT")
+    except Exception:
+        pass
+    try:
         db.execute("""CREATE TABLE IF NOT EXISTS triage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_hash TEXT UNIQUE,
@@ -195,7 +204,137 @@ def deadline_status(closing_date_str):
     except Exception:
         return None
 
-# ─── Moat Scorer v2.2 ──────────────────────────────────────────────────
+# ─── Remote Location Detector ───────────────────────────────────────────
+
+# Locations that are difficult/expensive for VI to service — flag and penalise
+REMOTE_LOCATIONS = {
+    # NT
+    "katherine": ("Katherine NT — remote, limited VI branch coverage", -8),
+    "darwin": ("Darwin NT — serviceable but logistics overhead", -4),
+    "alice springs": ("Alice Springs NT — very remote, significant logistics cost", -12),
+    "tennant creek": ("Tennant Creek NT — extremely remote", -14),
+    "nhulunbuy": ("Nhulunbuy NT — remote, fly-in required", -14),
+    # WA remote
+    "kalgoorlie": ("Kalgoorlie WA — remote mining hub, logistics overhead", -6),
+    "port hedland": ("Port Hedland WA — Pilbara, fly-in/drive logistics", -8),
+    "karratha": ("Karratha WA — Pilbara, logistics overhead", -8),
+    "broome": ("Broome WA — remote, limited coverage", -8),
+    "geraldton": ("Geraldton WA — serviceable but distant from Perth", -4),
+    "esperance": ("Esperance WA — remote southern WA", -6),
+    "newman": ("Newman WA — Pilbara, fly-in", -10),
+    "tom price": ("Tom Price WA — Pilbara, fly-in", -10),
+    # QLD remote
+    "mount isa": ("Mount Isa QLD — remote, significant logistics", -10),
+    "longreach": ("Longreach QLD — remote outback QLD", -8),
+    "cairns": ("Cairns QLD — serviceable, northern QLD", -3),
+    "townsville": ("Townsville QLD — serviceable", -2),
+    "rockhampton": ("Rockhampton QLD — serviceable", -2),
+    # SA remote
+    "whyalla": ("Whyalla SA — regional, serviceable", -3),
+    "port augusta": ("Port Augusta SA — regional", -3),
+    "coober pedy": ("Coober Pedy SA — very remote", -14),
+    # TAS
+    "tasmania": ("Tasmania — no VI branch, logistics/freight overhead", -8),
+    "hobart": ("Hobart TAS — no VI branch", -8),
+    "launceston": ("Launceston TAS — no VI branch", -8),
+    # NZ
+    "south island": ("NZ South Island — coverage thinner than North Island", -4),
+    "christchurch": ("Christchurch NZ — serviceable", -2),
+    "dunedin": ("Dunedin NZ — southern NZ, logistics overhead", -5),
+    "invercargill": ("Invercargill NZ — remote southern NZ", -8),
+}
+
+def check_location_flag(location_text):
+    """Returns (flag_description, score_penalty) or (None, 0)."""
+    if not location_text:
+        return None, 0
+    text = location_text.lower()
+    for key, (desc, penalty) in REMOTE_LOCATIONS.items():
+        if key in text:
+            return desc, penalty
+    return None, 0
+
+
+# ─── AI Summary Generator ────────────────────────────────────────────────
+
+SUMMARY_PROMPT = """You are a tender analyst for Vision Intelligence (VI), Australia's largest provider of solar-powered wireless surveillance cameras. VI's strengths: solar/off-grid deployment, 24/7 ASIAL-accredited monitoring, AI analytics (fire, dumping, ANPR), temporary/relocatable cameras for construction sites and remote assets. VI cannot do: fixed hardwired CCTV installation, access control, guarding, building services, maintenance of existing legacy systems.
+
+Given this tender/project, write a 3-sentence plain-English summary for the CEO (Robin) that:
+1. States what the project is and who the customer is (1 sentence)
+2. Explains specifically why it scored {score}/100 — which VI angles are present and which risks or flags pulled the score down (1 sentence)  
+3. States the concrete next action and any location or deadline concern (1 sentence)
+
+Be direct and specific. No fluff. Use plain language, not jargon. If the description is vague, say so explicitly.
+
+Project: {name}
+Customer: {customer}
+Location: {location}
+Type: {opp_type}
+Stage: {stage}
+Closing: {closing}
+Score: {score} ({verdict})
+Moats fired: {moats}
+Risk flags: {risk_flags}
+Location flag: {location_flag}
+Signal: {signal}
+
+Respond with ONLY the 3-sentence summary. No bullet points, no headers."""
+
+def generate_ai_summary(project):
+    """Call Claude to generate a plain-English summary. Returns string or None."""
+    try:
+        import urllib.request
+        prompt = SUMMARY_PROMPT.format(
+            name=project.get("project_name",""),
+            customer=project.get("customer",""),
+            location=project.get("location",""),
+            opp_type=project.get("opportunity_type",""),
+            stage=project.get("stage","")[:200],
+            closing=project.get("closing_date") or "unknown",
+            score=project.get("doability_score",""),
+            verdict=project.get("verdict",""),
+            moats=project.get("moats") or "none",
+            risk_flags=project.get("risk_flags") or "none",
+            location_flag=project.get("location_flag") or "none",
+            signal=(project.get("signal_summary") or "")[:400],
+        )
+        payload = json.dumps({
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 200,
+            "messages": [{"role": "user", "content": prompt}]
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            return data["content"][0]["text"].strip()
+    except Exception as e:
+        print(f"Summary generation failed for {project.get('project_name','?')}: {e}")
+        return None
+
+
+def generate_summaries_async(hashes_and_projects):
+    """Run summary generation in a background thread for new projects only."""
+    def worker():
+        db = sqlite3.connect(DB_PATH)
+        for h, proj in hashes_and_projects:
+            existing = db.execute("SELECT ai_summary FROM projects WHERE project_hash=?", (h,)).fetchone()
+            if existing and existing[0]:
+                continue  # already has summary, skip
+            summary = generate_ai_summary(proj)
+            if summary:
+                db.execute("UPDATE projects SET ai_summary=? WHERE project_hash=?", (summary, h))
+                db.commit()
+        db.close()
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
 
 MOATS = [
     ("M1 off-grid/remote", r"\boff[- ]grid\b|no (mains|fixed|grid) power|unpowered|remote (site|area|location|asset)s?|isolated|no (comms|connectivity|network)|starlink|satellite|transmission (line|project|corridor)|wind farm|solar farm|\bbess\b|battery energy|pipeline|quarry|\bmine\b|mining|landfill|\bdam\b|greenfield|renewable energy zone|\brez\b|exploration|remote area|rural area|off-site|off site"),
@@ -344,6 +483,7 @@ def ingest_projects(csv_text, run_id, db):
     now = datetime.utcnow().isoformat()
     new_count = 0
     total = 0
+    new_for_summary = []  # collect new projects needing AI summary
 
     for row in reader:
         if row.get("active", "").lower() != "true":
@@ -352,29 +492,52 @@ def ingest_projects(csv_text, run_id, db):
         h = make_hash(row)
         scores = score_project(row)
 
-        # Extract closing date from stage field
+        # Location flag + score adjustment
+        loc_text = row.get("location", "") + " " + row.get("signal_summary", "")
+        location_flag, loc_penalty = check_location_flag(loc_text)
+        if loc_penalty:
+            scores["doability_score"] = max(0, scores["doability_score"] + loc_penalty)
+            if scores["doability_score"] < 70 and scores["verdict"] == "GO":
+                scores["verdict"] = "MAYBE"
+            if scores["doability_score"] < 50 and scores["verdict"] == "MAYBE":
+                scores["verdict"] = "PASS"
+
+        # Extract closing date
         stage_text = row.get("stage", "") + " " + row.get("notes", "")
         closing_date = extract_closing_date(stage_text)
         ds = deadline_status(closing_date)
         is_closed = 1 if ds == 'closed' else 0
 
-        existing = db.execute("SELECT id, first_seen_at FROM projects WHERE project_hash = ?", (h,)).fetchone()
+        existing = db.execute("SELECT id, first_seen_at, ai_summary FROM projects WHERE project_hash = ?", (h,)).fetchone()
+
+        proj_data = {**scores,
+            "project_name": row.get("project_name",""),
+            "customer": row.get("customer",""),
+            "location": row.get("location",""),
+            "opportunity_type": row.get("opportunity_type",""),
+            "stage": row.get("stage",""),
+            "closing_date": closing_date,
+            "signal_summary": row.get("signal_summary",""),
+            "location_flag": location_flag,
+        }
 
         if existing:
             db.execute("""UPDATE projects SET
                 doability_score=?, verdict=?, action_bucket=?, moats=?, moat_count=?,
                 risk_flags=?, commodity=?, last_seen_at=?, run_id=?,
                 stage=?, opportunity_type=?, priority_score=?, signal_summary=?, notes=?, active=?,
-                closing_date=?, is_closed=?
+                closing_date=?, is_closed=?, location_flag=?
                 WHERE project_hash=?""",
                 (scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
                  now, run_id,
-                 row.get("stage", ""), row.get("opportunity_type", ""),
-                 row.get("priority_score", ""), row.get("signal_summary", ""),
-                 row.get("notes", ""), row.get("active", ""),
-                 closing_date, is_closed,
-                 h))
+                 row.get("stage",""), row.get("opportunity_type",""),
+                 row.get("priority_score",""), row.get("signal_summary",""),
+                 row.get("notes",""), row.get("active",""),
+                 closing_date, is_closed, location_flag, h))
+            # Regenerate summary if score changed significantly or no summary yet
+            if not existing["ai_summary"]:
+                new_for_summary.append((h, proj_data))
         else:
             new_count += 1
             vals = {f: row.get(f, "") for f in PROJECT_FIELDS}
@@ -384,15 +547,23 @@ def ingest_projects(csv_text, run_id, db):
                  signal_summary, notes, active,
                  doability_score, verdict, action_bucket, moats, moat_count,
                  risk_flags, commodity, first_seen_at, last_seen_at, run_id,
-                 closing_date, is_closed)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 closing_date, is_closed, location_flag)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (h, vals["project_name"], vals["customer"], vals["location"],
                  vals["asset_type"], vals["sector"], vals["stage"], vals["year"],
                  vals["source_url"], vals["socI_relevance"], vals["opportunity_type"],
                  vals["priority_score"], vals["signal_summary"], vals["notes"], vals["active"],
                  scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
-                 now, now, run_id, closing_date, is_closed))
+                 now, now, run_id, closing_date, is_closed, location_flag))
+            new_for_summary.append((h, proj_data))
+
+    db.commit()
+    # Fire off summary generation in background for new/unsummarised projects
+    # Only do GO and MAYBE to keep API costs down
+    priority = [(h, p) for h, p in new_for_summary if p.get("verdict") in ("GO","MAYBE")]
+    if priority:
+        generate_summaries_async(priority)
 
     return total, new_count
 
@@ -481,6 +652,20 @@ def triage_summary():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/summary/<project_hash>")
+def get_summary(project_hash):
+    db = get_db()
+    row = db.execute("SELECT ai_summary, doability_score, verdict, moats, risk_flags, location_flag, project_name, customer, location, opportunity_type, stage, closing_date, signal_summary FROM projects WHERE project_hash=?", (project_hash,)).fetchone()
+    if not row:
+        return jsonify({"summary": None}), 404
+    if row["ai_summary"]:
+        return jsonify({"summary": row["ai_summary"], "ready": True})
+    # Not ready yet — trigger generation if not already running
+    proj = dict(row)
+    generate_summaries_async([(project_hash, proj)])
+    return jsonify({"summary": None, "ready": False})
+
+
 # ─── Routes ─────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -516,7 +701,6 @@ def api_projects():
         d["deadline_status"] = deadline_status(d.get("closing_date"))
         result.append(d)
     return jsonify(result)
-
 
 @app.route("/api/projects/new")
 def api_new_projects():

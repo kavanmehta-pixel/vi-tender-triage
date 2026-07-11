@@ -126,6 +126,12 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .comment-send:hover{border-color:var(--amber);color:var(--amber)}
 .author-input{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:8px 11px;font-size:13px;font-family:inherit;outline:none;width:110px}
 .author-input:focus{border-color:var(--amber)}
+.ai-summary{font-size:13px;color:var(--text);line-height:1.7;background:rgba(245,166,35,.05);border:1px solid rgba(245,166,35,.15);border-radius:7px;padding:10px 13px}
+.ai-summary.generating{color:var(--dim);font-style:italic;background:var(--panel2)}
+.loc-flag-label{color:var(--urgent)!important}
+.loc-flag{color:var(--soon);font-size:12.5px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{display:inline-block;animation:spin 1s linear infinite}
 .loc{color:var(--dim);font-size:12px;white-space:nowrap}
 .loading{text-align:center;padding:60px;color:var(--muted);font-size:15px}
 .foot{color:var(--dim);font-size:11.5px;margin-top:26px;line-height:1.7;border-top:1px solid var(--line);padding-top:14px}
@@ -305,7 +311,7 @@ function render(){
     const commentBadge=d.comment_count>0?`<span class="comment-dot">💬${d.comment_count}</span>`:'';
     return `<tr class="row ${isNew?'is-new':''} ${d.is_closed?'is-closed':''} ${triCls}" onclick="tog(this,'${esc(d.project_hash)}',${i})">
       <td class="pname">${isNew?'<span class="new-dot"></span>':''}${d.source_url?`<a href="${esc(d.source_url)}" target="_blank" onclick="event.stopPropagation()">${esc(d.project_name)}</a>`:esc(d.project_name)}${triageBadge(d)}${commentBadge}
-        <div class="cust">${esc(d.customer)}</div></td>
+        <div class="cust">${esc(d.customer)}${d.location_flag?` <span style="color:var(--urgent);font-size:10px" title="${esc(d.location_flag)}">⚠️ remote</span>`:''}</div></td>
       <td class="scorecell"><span class="snum" style="color:${scoreColor(d.doability_score)}">${d.doability_score}</span>
         <div class="bar"><i style="width:${d.doability_score}%;background:${scoreColor(d.doability_score)}"></i></div></td>
       <td><span class="badge b-${d.verdict}">${d.verdict}</span></td>
@@ -318,18 +324,29 @@ function render(){
     <tr class="detail" id="det${i}" style="display:none"><td colspan="8">
       <div class="detail-inner">
         <div class="detail-left">
+          ${d.ai_summary ? `<div class="detail-section">
+            <div class="detail-label">📋 Summary</div>
+            <div class="detail-text ai-summary">${esc(d.ai_summary)}</div>
+          </div>` : `<div class="detail-section">
+            <div class="detail-label">📋 Summary</div>
+            <div class="detail-text ai-summary generating" id="sum-${i}">Generating summary… <span class="spin">⟳</span></div>
+          </div>`}
+          ${d.location_flag ? `<div class="detail-section">
+            <div class="detail-label loc-flag-label">⚠️ Location flag</div>
+            <div class="detail-text loc-flag">${esc(d.location_flag)}</div>
+          </div>` : ''}
           ${d.closing_date?`<div class="detail-section"><div class="detail-label">Deadline</div><div class="detail-text" style="color:${d.deadline_status==='urgent'?'var(--urgent)':d.deadline_status==='soon'?'var(--soon)':'var(--muted)'}">${d.closing_date} (${d.deadline_status||'unknown'})</div></div>`:''}
           <div class="detail-section">
-            <div class="detail-label">Unique angles</div>
-            <div>${d.moats?d.moats.split('; ').map(t=>`<span class="tag pos">${esc(t)}</span>`).join(''):'<span class="tag neg">none — commodity scope</span>'}</div>
+            <div class="detail-label">Why this score (${d.doability_score})</div>
+            <div>${d.moats?d.moats.split('; ').map(t=>`<span class="tag pos">✓ ${esc(t)}</span>`).join(''):'<span class="tag neg">no moats — commodity scope</span>'}
+            ${d.risk_flags?d.risk_flags.split('; ').map(t=>`<span class="tag neg">✗ ${esc(t)}</span>`).join(''):''}</div>
           </div>
-          ${d.risk_flags?`<div class="detail-section"><div class="detail-label">Risk flags</div><div>${d.risk_flags.split('; ').map(t=>`<span class="tag neg">${esc(t)}</span>`).join('')}</div></div>`:''}
           <div class="detail-section">
             <div class="detail-label">Details</div>
-            <div class="detail-text"><b>Stage:</b> ${esc(d.stage)||'—'} · <b>Type:</b> ${esc(d.opportunity_type)||'—'} · <b>Asset:</b> ${esc(d.asset_type)||'—'} · <b>Year:</b> ${esc(d.year)||'—'}<br>
+            <div class="detail-text"><b>Type:</b> ${esc(d.opportunity_type)||'—'} · <b>Stage:</b> ${esc(d.stage)||'—'} · <b>Asset:</b> ${esc(d.asset_type)||'—'} · <b>Year:</b> ${esc(d.year)||'—'}<br>
             ${d.first_seen_at?`<b>First seen:</b> ${d.first_seen_at.slice(0,10)} · <b>Last seen:</b> ${d.last_seen_at.slice(0,10)}<br>`:''}</div>
           </div>
-          ${d.signal_summary?`<div class="detail-section"><div class="detail-label">Signal</div><div class="detail-text">${esc(d.signal_summary)}</div></div>`:''}
+          ${d.signal_summary&&!d.ai_summary?`<div class="detail-section"><div class="detail-label">Raw signal</div><div class="detail-text">${esc(d.signal_summary)}</div></div>`:''}
         </div>
         <div class="detail-right">
           <div class="triage-panel" id="tp-${i}">
@@ -436,7 +453,25 @@ function tog(trEl, hash, i){
   const det=document.getElementById(`det${i}`);
   const isOpen=det.style.display!=='none';
   det.style.display=isOpen?'none':'';
-  if(!isOpen) loadComments(i,hash);
+  if(!isOpen){
+    loadComments(i,hash);
+    // Poll for AI summary if not yet generated
+    const d=DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
+    if(d&&!d.ai_summary) pollSummary(i,hash,d);
+  }
+}
+
+async function pollSummary(i, hash, d, attempts=0){
+  if(attempts>20) return; // give up after ~60s
+  const res=await fetch(`/api/summary/${hash}`);
+  const data=await res.json();
+  if(data.ready&&data.summary){
+    d.ai_summary=data.summary;
+    const el=document.getElementById(`sum-${i}`);
+    if(el){el.classList.remove('generating');el.innerHTML=esc(data.summary);}
+  } else {
+    setTimeout(()=>pollSummary(i,hash,d,attempts+1),3000);
+  }
 }
 
 document.getElementById('q').oninput=e=>{filt.q=e.target.value.toLowerCase();render();};
