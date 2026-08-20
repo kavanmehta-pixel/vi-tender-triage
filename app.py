@@ -142,6 +142,12 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_comments_hash ON comments(project_hash)")
     except Exception:
         pass
+    # Pipeline tracking columns (Aug 14 meeting: status, owner, next steps, scope)
+    for col, coltype in [("status","TEXT"),("owner","TEXT"),("next_steps","TEXT"),("scope","TEXT"),("status_updated_at","TEXT")]:
+        try:
+            db.execute(f"ALTER TABLE triage ADD COLUMN {col} {coltype}")
+        except Exception:
+            pass
     db.commit()
     db.close()
 
@@ -547,13 +553,20 @@ def save_triage(project_hash):
     decision = data.get("decision", "")
     reason = data.get("reason", "")
     decided_by = data.get("decided_by", "")
+    status = data.get("status", "")
+    owner = data.get("owner", "")
+    next_steps = data.get("next_steps", "")
+    scope = data.get("scope", "")
     now = datetime.utcnow().isoformat()
-    db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at)
-        VALUES (?,?,?,?,?)
+    db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at, status, owner, next_steps, scope, status_updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(project_hash) DO UPDATE SET
         decision=excluded.decision, reason=excluded.reason,
-        decided_by=excluded.decided_by, decided_at=excluded.decided_at""",
-        (project_hash, decision, reason, decided_by, now))
+        decided_by=excluded.decided_by, decided_at=excluded.decided_at,
+        status=excluded.status, owner=excluded.owner,
+        next_steps=excluded.next_steps, scope=excluded.scope,
+        status_updated_at=excluded.status_updated_at""",
+        (project_hash, decision, reason, decided_by, now, status, owner, next_steps, scope, now))
     db.commit()
     return jsonify({"ok": True, "decided_at": now})
 
@@ -587,6 +600,32 @@ def triage_summary():
         GROUP BY t.decision
     """).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/pipeline")
+def api_pipeline():
+    """All tenders with an active triage decision or status — the working pipeline
+    for the weekly report to Michael/Danny/Robin/John."""
+    db = get_db()
+    rows = db.execute("""
+        SELECT p.project_name, p.customer, p.location, p.sector, p.source_url,
+               p.doability_score, p.verdict, p.closing_date, p.is_closed,
+               p.opportunity_type, p.project_hash,
+               t.decision, t.reason, t.status, t.owner, t.next_steps, t.scope,
+               t.decided_by, t.decided_at, t.status_updated_at
+        FROM triage t
+        JOIN projects p ON p.project_hash = t.project_hash
+        WHERE t.decision IS NOT NULL AND t.decision != ''
+        ORDER BY
+            CASE t.decision WHEN 'full' THEN 0 WHEN 'philip' THEN 1 ELSE 2 END,
+            p.doability_score DESC
+    """).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["deadline_status"] = deadline_status(d.get("closing_date"))
+        result.append(d)
+    return jsonify(result)
 
 
 @app.route("/api/summary/<project_hash>")
@@ -632,6 +671,10 @@ def api_projects():
             t.reason as triage_reason,
             t.decided_by as triage_decided_by,
             t.decided_at as triage_decided_at,
+            t.status as triage_status,
+            t.owner as triage_owner,
+            t.next_steps as triage_next_steps,
+            t.scope as triage_scope,
             (SELECT COUNT(*) FROM comments c WHERE c.project_hash = p.project_hash) as comment_count
         FROM projects p
         LEFT JOIN triage t ON t.project_hash = p.project_hash

@@ -109,6 +109,25 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .triage-save:hover{opacity:.85}
 .triage-saved{font-size:11.5px;color:var(--go);margin-left:10px;opacity:0;transition:opacity .3s}
 .triage-saved.show{opacity:1}
+.pipeline-fields{margin:10px 0 12px;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.pf-row{display:flex;gap:10px;margin-bottom:8px}
+.pf-row:last-child{margin-bottom:0}
+.pf-col{flex:1;display:flex;flex-direction:column;gap:3px}
+.pf-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);font-weight:700}
+.pf-input{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:6px 9px;font-size:12.5px;font-family:inherit;outline:none;width:100%}
+.pf-input:focus{border-color:var(--amber)}
+/* pipeline table */
+.pipe-table td{font-size:13px}
+.status-pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.st-Screening{background:rgba(139,152,171,.15);color:var(--muted)}
+.st-Downloadingdocs{background:rgba(91,157,217,.15);color:var(--mon)}
+.st-Draftingresponse{background:rgba(167,139,250,.15);color:var(--bd)}
+.st-WithMichaelAlister{background:rgba(245,166,35,.15);color:var(--amber)}
+.st-Submitted{background:rgba(46,204,143,.15);color:var(--go)}
+.st-Awaitingoutcome{background:rgba(245,166,35,.15);color:var(--amber)}
+.st-Won{background:var(--go);color:#000}
+.st-Lost{background:rgba(224,85,99,.15);color:var(--pass)}
+.owner-tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 8px;font-size:11.5px;color:var(--text)}
 .triage-decided{font-size:11px;color:var(--dim);margin-top:8px}
 
 /* ── Comments ── */
@@ -155,6 +174,7 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 <div class="view-toggle">
   <button id="btnAll" class="on" onclick="setView('all')">All projects</button>
   <button id="btnNew" onclick="setView('new')">New this week<span class="new-badge" id="newBadge">0</span></button>
+  <button id="btnPipe" onclick="setView('pipe')">📋 Pipeline<span class="new-badge" id="pipeBadge" style="background:var(--t-full)">0</span></button>
 </div>
 
 <div class="cards" id="cards"></div>
@@ -187,6 +207,7 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 <tbody id="tb"></tbody>
 </table>
 </div>
+<div id="pipeWrap" style="display:none"></div>
 
 <div class="foot">
   Doability: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector/flags. <b style="color:var(--text)">Triage decisions and comments persist</b> — re-uploading CSVs won't erase them. Decision key: <span class="badge b-t-full">Full tender</span> → bespoke response · <span class="badge b-t-philip">Philip reach-out</span> → relationship/awareness · <span class="badge b-t-pass">Pass</span> → skip.
@@ -223,6 +244,11 @@ async function load(){
   locs.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;document.getElementById('fLoc').append(o)});
   document.getElementById('loading').style.display='none';
   document.getElementById('tbl').style.display='';
+  // pipeline badge count
+  fetch('/api/pipeline').then(r=>r.json()).then(p=>{
+    const active=p.filter(x=>x.decision!=='pass').length;
+    document.getElementById('pipeBadge').textContent=active;
+  });
   drawCards(); render();
 }
 async function toggleClosed(){
@@ -230,13 +256,55 @@ async function toggleClosed(){
   document.getElementById('closedToggle').className='toggle-label'+(showClosed?' active':'');
   DATA=await loadData(showClosed); drawCards(); render();
 }
+let PIPELINE=[];
 function setView(v){
   view=v;
   document.getElementById('btnAll').className=v==='all'?'on':'';
   document.getElementById('btnNew').className=v==='new'?'on':'';
-  filt.card=''; drawCards(); render();
+  document.getElementById('btnPipe').className=v==='pipe'?'on':'';
+  filt.card='';
+  if(v==='pipe'){ renderPipeline(); }
+  else { document.getElementById('pipeWrap').style.display='none'; document.getElementById('tableWrap').style.display=''; document.getElementById('cards').style.display=''; document.querySelector('.toolbar').style.display='flex'; drawCards(); render(); }
 }
 function src(){return view==='new'?DATA_NEW:DATA;}
+
+async function renderPipeline(){
+  document.getElementById('tableWrap').style.display='none';
+  document.getElementById('cards').style.display='none';
+  document.querySelector('.toolbar').style.display='none';
+  const wrap=document.getElementById('pipeWrap');
+  wrap.style.display='';
+  wrap.innerHTML='<div class="loading">Loading pipeline…</div>';
+  PIPELINE=await fetch('/api/pipeline').then(r=>r.json());
+  if(!PIPELINE.length){ wrap.innerHTML='<div class="loading">No tenders triaged yet. Set a decision on a tender to add it to the pipeline.</div>'; return; }
+  const decLabel={full:'✅ Full tender',philip:'💬 Philip reach-out',pass:'⛔ Pass'};
+  const decBadge={full:'b-t-full',philip:'b-t-philip',pass:'b-t-pass'};
+  // group: active work first (full + philip, not pass)
+  const active=PIPELINE.filter(p=>p.decision!=='pass');
+  const passed=PIPELINE.filter(p=>p.decision==='pass');
+  function rowHtml(p){
+    const stCls=p.status?('st-'+p.status.replace(/[^A-Za-z]/g,'')):'';
+    return `<tr>
+      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}<div class="cust">${esc(p.customer)}</div></td>
+      <td><span class="badge ${decBadge[p.decision]||''}">${decLabel[p.decision]||esc(p.decision)}</span></td>
+      <td>${p.scope?esc(p.scope):'<span style="color:var(--dim)">—</span>'}</td>
+      <td>${p.status?`<span class="status-pill ${stCls}">${esc(p.status)}</span>`:'<span style="color:var(--dim)">—</span>'}</td>
+      <td>${p.owner?`<span class="owner-tag">${esc(p.owner)}</span>`:'<span style="color:var(--dim)">unassigned</span>'}</td>
+      <td>${p.next_steps?esc(p.next_steps):'<span style="color:var(--dim)">—</span>'}</td>
+      <td>${p.closing_date?(p.deadline_status==='urgent'?`<span class="dl-urgent">🔴 ${p.closing_date}</span>`:p.deadline_status==='soon'?`<span class="dl-soon">🟠 ${p.closing_date}</span>`:p.deadline_status==='closed'?`<span class="dl-closed">${p.closing_date}</span>`:p.closing_date):'—'}</td>
+      <td>${esc(p.location)}</td>
+    </tr>`;
+  }
+  wrap.innerHTML=`
+    <div style="margin-bottom:10px;color:var(--muted);font-size:13px">${active.length} active in pipeline · ${passed.length} passed. This is the weekly status view for Michael, Danny, Robin & John.</div>
+    <table class="pipe-table"><thead><tr>
+      <th>Tender / Customer</th><th>Decision</th><th>Scope</th><th>Status</th><th>Owner</th><th>Next step</th><th>Deadline</th><th>Loc</th>
+    </tr></thead><tbody>
+      ${active.map(rowHtml).join('')}
+      ${passed.length?`<tr><td colspan="8" style="padding-top:18px;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Passed</td></tr>`:''}
+      ${passed.map(rowHtml).join('')}
+    </tbody></table>`;
+}
 
 const cardsDef=[
   {id:'gonow', label:'GO × Act now', cls:'hot',    test:d=>d.verdict==='GO'&&(d.action_bucket||'').startsWith('ACT')},
@@ -358,6 +426,46 @@ function render(){
               </button>`).join('')}
             </div>
             <textarea class="triage-reason" id="treason-${i}" placeholder="Why? Add context for Michael, Danny and Robin…">${esc(d.triage_reason||'')}</textarea>
+            <div class="pipeline-fields">
+              <div class="pf-row">
+                <div class="pf-col">
+                  <label class="pf-label">Status</label>
+                  <select class="pf-input" id="tstatus-${i}">
+                    <option value="">— not started —</option>
+                    <option value="Screening" ${d.triage_status==='Screening'?'selected':''}>Screening</option>
+                    <option value="Downloading docs" ${d.triage_status==='Downloading docs'?'selected':''}>Downloading docs</option>
+                    <option value="Drafting response" ${d.triage_status==='Drafting response'?'selected':''}>Drafting response</option>
+                    <option value="With Michael/Alister" ${d.triage_status==='With Michael/Alister'?'selected':''}>With Michael/Alister</option>
+                    <option value="Submitted" ${d.triage_status==='Submitted'?'selected':''}>Submitted</option>
+                    <option value="Awaiting outcome" ${d.triage_status==='Awaiting outcome'?'selected':''}>Awaiting outcome</option>
+                    <option value="Won" ${d.triage_status==='Won'?'selected':''}>Won</option>
+                    <option value="Lost" ${d.triage_status==='Lost'?'selected':''}>Lost</option>
+                  </select>
+                </div>
+                <div class="pf-col">
+                  <label class="pf-label">Owner</label>
+                  <select class="pf-input" id="towner-${i}">
+                    <option value="">— unassigned —</option>
+                    ${['Kavan','Philip','Michael','Alister','Danny','Robin'].map(o=>`<option value="${o}" ${d.triage_owner===o?'selected':''}>${o}</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+              <div class="pf-row">
+                <div class="pf-col">
+                  <label class="pf-label">Scope</label>
+                  <select class="pf-input" id="tscope-${i}">
+                    <option value="">—</option>
+                    <option value="Full scope" ${d.triage_scope==='Full scope'?'selected':''}>Full scope</option>
+                    <option value="Partial scope" ${d.triage_scope==='Partial scope'?'selected':''}>Partial scope</option>
+                    <option value="EOI only" ${d.triage_scope==='EOI only'?'selected':''}>EOI only</option>
+                  </select>
+                </div>
+                <div class="pf-col">
+                  <label class="pf-label">Next step</label>
+                  <input class="pf-input" id="tnext-${i}" placeholder="e.g. register + download docs" value="${esc(d.triage_next_steps||'')}">
+                </div>
+              </div>
+            </div>
             <div style="display:flex;align-items:center">
               <button class="triage-save" onclick="saveTriage(${i},'${esc(d.project_hash)}')">Save decision</button>
               <span class="triage-saved" id="tsaved-${i}">✓ Saved</span>
@@ -394,13 +502,16 @@ async function saveTriage(i, hash){
   const decision=selectedTriage[i]||'';
   const reason=document.getElementById(`treason-${i}`).value;
   const author=document.getElementById(`cauthor-${i}`)?.value||'Kavan';
-  await fetch(`/api/triage/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,reason,decided_by:author})});
+  const status=document.getElementById(`tstatus-${i}`)?.value||'';
+  const owner=document.getElementById(`towner-${i}`)?.value||'';
+  const next_steps=document.getElementById(`tnext-${i}`)?.value||'';
+  const scope=document.getElementById(`tscope-${i}`)?.value||'';
+  await fetch(`/api/triage/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,reason,decided_by:author,status,owner,next_steps,scope})});
   const s=document.getElementById(`tsaved-${i}`);
   s.classList.add('show');
   setTimeout(()=>s.classList.remove('show'),2000);
-  // update local data
   const d=DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
-  if(d){d.triage_decision=decision;d.triage_reason=reason;}
+  if(d){d.triage_decision=decision;d.triage_reason=reason;d.triage_status=status;d.triage_owner=owner;d.triage_next_steps=next_steps;d.triage_scope=scope;}
   render();
 }
 
