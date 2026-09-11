@@ -14,6 +14,7 @@
   --pass:#e05563;--pass-dim:rgba(224,85,99,.12);
   --mon:#5b9dd9;--bd:#a78bfa;--new:#3b82f6;
   --urgent:#ff4d4d;--soon:#f97316;
+  --needsdoc:#38bdf8;--needsdoc-dim:rgba(56,189,248,.13);
   /* triage colours */
   --t-pass:#e05563;--t-pass-dim:rgba(224,85,99,.12);
   --t-philip:#a78bfa;--t-philip-dim:rgba(167,139,250,.12);
@@ -63,6 +64,11 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .new-dot{display:inline-block;width:7px;height:7px;background:var(--new);border-radius:50%;margin-right:5px;vertical-align:middle}
 .badge{display:inline-block;padding:2.5px 9px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.4px}
 .b-GO{background:var(--go-dim);color:var(--go)}.b-MAYBE{background:var(--maybe-dim);color:var(--maybe)}.b-PASS{background:var(--pass-dim);color:var(--pass)}
+.b-NEEDSDOC{background:var(--needsdoc-dim);color:var(--needsdoc)}
+.conf{font-size:10px;padding:1px 6px;border-radius:9px;margin-left:5px;font-weight:700;letter-spacing:.3px}
+.conf-HIGH{background:rgba(46,204,143,.12);color:var(--go)}
+.conf-MEDIUM{background:rgba(245,166,35,.12);color:var(--amber)}
+.conf-LOW{background:rgba(224,85,99,.14);color:var(--pass)}
 .b-act{background:rgba(46,204,143,.1);color:var(--go)}.b-mon{background:rgba(91,157,217,.12);color:var(--mon)}.b-bd{background:rgba(167,139,250,.12);color:var(--bd)}.b-rev{background:rgba(139,152,171,.12);color:var(--muted)}
 .b-t-pass{background:var(--t-pass-dim);color:var(--t-pass);border:1px solid rgba(224,85,99,.3)}
 .b-t-philip{background:var(--t-philip-dim);color:var(--t-philip);border:1px solid rgba(167,139,250,.3)}
@@ -181,7 +187,7 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 
 <div class="toolbar">
   <input type="search" id="q" placeholder="Search project, customer, sector, moat…">
-  <select id="fVerdict"><option value="">All verdicts</option><option>GO</option><option>MAYBE</option><option>PASS</option></select>
+  <select id="fVerdict"><option value="">All verdicts</option><option>GO</option><option>NEEDS DOC</option><option>MAYBE</option><option>PASS</option></select>
   <select id="fAction"><option value="">All buckets</option><option value="ACT NOW (open)">Act now</option><option value="MONITOR (pre-market)">Monitor</option><option value="BD PLAY (sell direct)">BD play</option></select>
   <select id="fDeadline"><option value="">All deadlines</option><option value="urgent">🔴 Closes ≤7 days</option><option value="soon">🟠 Closes ≤30 days</option><option value="future">Future</option><option value="closed">Closed</option></select>
   <select id="fTriage"><option value="">All triage</option><option value="pass">⛔ Pass</option><option value="philip">💬 Philip reach-out</option><option value="full">✅ Full tender</option><option value="none">Not yet triaged</option></select>
@@ -210,7 +216,7 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 <div id="pipeWrap" style="display:none"></div>
 
 <div class="foot">
-  Doability: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector/flags. <b style="color:var(--text)">Triage decisions and comments persist</b> — re-uploading CSVs won't erase them. Decision key: <span class="badge b-t-full">Full tender</span> → bespoke response · <span class="badge b-t-philip">Philip reach-out</span> → relationship/awareness · <span class="badge b-t-pass">Pass</span> → skip.
+  Doability: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector/flags. <b style="color:var(--text)">Triage decisions and comments persist</b> — re-uploading CSVs won't erase them. <b style="color:var(--needsdoc)">NEEDS DOC</b> = plausible fit but the listing is too thin to judge — pull the requirements pack. Decision key: <span class="badge b-t-full">Full tender</span> → bespoke response · <span class="badge b-t-philip">Philip reach-out</span> → relationship/awareness · <span class="badge b-t-pass">Pass</span> → skip.
 </div>
 </div>
 
@@ -218,7 +224,7 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 let DATA=[], DATA_NEW=[], view='all', sortK=null, sortAsc=false;
 let filt={q:'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:'',triage:''};
 let showClosed=false;
-const rank={GO:0,MAYBE:1,PASS:2};
+const rank={GO:0,'NEEDS DOC':1,MAYBE:2,PASS:3};
 const TRIAGE_OPTS=[
   {key:'pass',   icon:'⛔', name:'Pass on this tender',       desc:'Not worth pursuing — scope mismatch, commodity play, or too much competition',   cls:'selected-pass',   badge:'b-t-pass',   label:'Pass'},
   {key:'philip', icon:'💬', name:'Philip reaches out',         desc:'Relationship/awareness play — Philip makes contact, no full tender response needed', cls:'selected-philip', badge:'b-t-philip', label:'Philip reach-out'},
@@ -311,6 +317,7 @@ const cardsDef=[
   {id:'urgent',label:'Closes ≤7 days',cls:'urgent', test:d=>d.deadline_status==='urgent'},
   {id:'soon',  label:'Closes ≤30 days',cls:'hot',   test:d=>d.deadline_status==='soon'},
   {id:'go',    label:'GO',            cls:'go',     test:d=>d.verdict==='GO'},
+  {id:'needsdoc',label:'Needs doc',   cls:'mon',    test:d=>d.verdict==='NEEDS DOC'},
   {id:'maybe', label:'MAYBE',         cls:'maybe',  test:d=>d.verdict==='MAYBE'},
   {id:'pass',  label:'PASS',          cls:'pass',   test:d=>d.verdict==='PASS'},
   {id:'mon',   label:'Monitor',       cls:'mon',    test:d=>(d.action_bucket||'').startsWith('MONITOR')},
@@ -382,7 +389,7 @@ function render(){
         <div class="cust">${esc(d.customer)}${d.location_flag?` <span style="color:var(--urgent);font-size:10px" title="${esc(d.location_flag)}">⚠️ remote</span>`:''}</div></td>
       <td class="scorecell"><span class="snum" style="color:${scoreColor(d.doability_score)}">${d.doability_score}</span>
         <div class="bar"><i style="width:${d.doability_score}%;background:${scoreColor(d.doability_score)}"></i></div></td>
-      <td><span class="badge b-${d.verdict}">${d.verdict}</span></td>
+      <td><span class="badge b-${(d.verdict||'').replace(/ /g,'')}">${d.verdict}</span>${d.confidence?`<span class="conf conf-${d.confidence}">${d.confidence==="LOW"?"scope unclear":d.confidence==="MEDIUM"?"scope partial":"scope clear"}</span>`:''}</td>
       <td><span class="badge ${b}">${esc(d.action_bucket||'')}</span></td>
       <td>${dlBadge(d)}</td>
       <td>${d.commodity==='yes'?'<span class="badge b-PASS">COMMODITY</span>':(d.moats||'').split('; ').filter(Boolean).map(m=>`<span class="moat" title="${esc(m)}">${m.slice(0,2)}</span>`).join('')}</td>
@@ -405,7 +412,7 @@ function render(){
           </div>` : ''}
           ${d.closing_date?`<div class="detail-section"><div class="detail-label">Deadline</div><div class="detail-text" style="color:${d.deadline_status==='urgent'?'var(--urgent)':d.deadline_status==='soon'?'var(--soon)':'var(--muted)'}">${d.closing_date} (${d.deadline_status||'unknown'})</div></div>`:''}
           <div class="detail-section">
-            <div class="detail-label">Why this score (${d.doability_score})</div>
+            <div class="detail-label">Why this score (${d.doability_score})</div>${d.why_fit?`<div class="detail-text" style="margin-bottom:7px;color:var(--muted)">Inferred from — ${esc(d.why_fit)}</div>`:''}
             <div>${d.moats?d.moats.split('; ').map(t=>`<span class="tag pos">✓ ${esc(t)}</span>`).join(''):'<span class="tag neg">no moats — commodity scope</span>'}
             ${d.risk_flags?d.risk_flags.split('; ').map(t=>`<span class="tag neg">✗ ${esc(t)}</span>`).join(''):''}</div>
           </div>

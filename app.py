@@ -50,7 +50,8 @@ def init_db():
         last_seen_at TEXT,
         run_id TEXT,
         closing_date TEXT,
-        is_closed INTEGER DEFAULT 0
+        is_closed INTEGER DEFAULT 0,
+        confidence TEXT
     );
     CREATE TABLE IF NOT EXISTS contacts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +107,14 @@ def init_db():
         pass
     try:
         db.execute("ALTER TABLE projects ADD COLUMN is_closed INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE projects ADD COLUMN confidence TEXT")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE projects ADD COLUMN why_fit TEXT")
     except Exception:
         pass
     try:
@@ -265,125 +274,252 @@ def check_location_flag(location_text):
 # generates plain-English summaries, and uploads an enriched CSV via /upload-enriched.
 # This keeps all Anthropic API usage inside Cowork — no API key lives on Railway.
 
-MOATS = [
-    ("M1 off-grid/remote", r"\boff[- ]grid\b|no (mains|fixed|grid) power|unpowered|remote (site|area|location|asset)s?|isolated|no (comms|connectivity|network)|starlink|satellite|transmission (line|project|corridor)|wind farm|solar farm|\bbess\b|battery energy|pipeline|quarry|\bmine\b|mining|landfill|\bdam\b|greenfield|renewable energy zone|\brez\b|exploration|remote area|rural area|off-site|off site"),
-    ("M2 solar", r"solar.powered|solar power|solar camera|solar panel|solar energy|solar surveillance|\bpv\b|photovoltaic"),
-    ("M3 monitored outcome", r"24/7|monitor(ing|ed)|alarm response|command centre|control room|monitoring[- ]as[- ]a[- ]service|asial|virtual patrol|surveillance service|remote monitoring|security monitoring|live monitoring|continuous monitoring"),
-    ("M4 AI analytics", r"\bai\b|artificial intelligence|analytics|anpr|number ?plate|licen[cs]e plate|illegal dumping|dumping detection|fire detection|smoke detection|machine learning|computer vision|smart camera|object detection|behavioural detection|heat detection|heatguard|enviroguard|envirosense"),
-    ("M5 temp/rapid deploy", r"temporary|relocatable|redeployable|short[- ]term|rapid[- ]deploy|quick[- ]deploy|mobile (cctv|camera|surveillance)|trailer|construction (site|phase|period|work)|site security|laydown|compound|early works|enabling works|hire\b|event security|pop[- ]up"),
-    ("M6 traffic/transport analytics", r"traffic count|traffic monitor|traffic management|vehicle count|traffic flow|traffic survey|traffic camera|vehicle detection|axle count|weigh[- ]in[- ]motion|wim|loadSure|load monitoring|freight|haulage|road safety camera|intersection|road count|pedestrian count|transport monitoring"),
-]
+# ─── Moat Scorer v3 ────────────────────────────────────────────────────
+# FIT and ACTIONABILITY are scored as two independent axes. Fit is inferred
+# from project archetype -> asset class -> text (in that order of trust), so a
+# terse one-line tender listing is no longer punished for being terse.
 
-ASSET_MOAT = {
-    "off_grid_solar_security": ["M1 off-grid/remote", "M2 solar"],
-    "mobile_rapid_deploy_cctv": ["M5 temp/rapid deploy"],
-    "unmanned_site_monitoring": ["M3 monitored outcome", "M1 off-grid/remote"],
-    "temporary_event_site_security": ["M5 temp/rapid deploy"],
-    "remote_surveillance_monitoring": ["M3 monitored outcome"],
-    "license_plate_recognition": ["M4 AI analytics"],
-    "traffic_monitoring": ["M6 traffic/transport analytics", "M4 AI analytics"],
-    "environmental_monitoring": ["M4 AI analytics", "M1 off-grid/remote"],
+import re
+
+# ── 1. PROJECT ARCHETYPE: what a project IS implies its conditions ──────────
+# A wind farm is remote and construction-phase whether or not the text says so.
+ARCHETYPES = {
+    "renewable_generation": (
+        r"wind farm|solar farm|solar project|windfarm|photovoltaic|renewable energy (project|zone|hub)|"
+        r"energy hub|energy park|\bbess\b|battery energy storage|big battery|pumped hydro|hydropower|"
+        r"offshore wind|solar \+ ?bess|energy storage system",
+        {"M1": 1.0, "M5": 0.9, "M2": 0.35}),
+    "transmission": (
+        r"transmission (line|project|corridor|upgrade|development)|interconnector|substation|switching station|"
+        r"\d{3}\s?kv|powerline|network operator|grid connection",
+        {"M1": 1.0, "M5": 0.85}),
+    "resources": (
+        r"\bmine\b|mining|gold project|copper project|lithium|rare earth|mineral sands|iron ore|"
+        r"processing plant|concentrator|tailings|quarry|exploration|drilling program|smelter|refinery",
+        {"M1": 1.0, "M5": 0.8}),
+    "linear_infra": (
+        r"pipeline|highway|ring road|motorway|rail (link|line|corridor)|road upgrade|freight terminal|"
+        r"level crossing|bridge|duplication",
+        {"M1": 0.85, "M5": 0.85}),
+    "water_waste": (
+        r"water treatment|wastewater|wwtp|desalination|\bdam\b|reservoir|sewage|landfill|waste facility|"
+        r"resource recovery|tailings storage",
+        {"M1": 0.8, "M5": 0.6}),
+    "construction_site": (
+        r"construction (of|works|site|package|phase)|early works|enabling works|civil works|site establishment|"
+        r"laydown|compound|redevelopment|main works|d&c|design and construct",
+        {"M5": 1.0, "M1": 0.45}),
+    "port_marine": (r"\bport\b|wharf|berth|marine (infrastructure|precinct)|terminal", {"M1": 0.55, "M5": 0.6}),
+    "vertical_building": (
+        r"\blibrary\b|community (centre|center|precinct|hub)|office (building|fit)|school building|classroom|"
+        r"\bhospital\b|health (centre|facility)|aged care|childcare|museum|gallery|theatre|stadium roof|"
+        r"apartment|residential building|\bclinic\b|prison|correctional (centre|facility)|courthouse",
+        {}),
+    "council_open": (
+        r"council|shire|regional council|public space|park|reserve|sportsground|oval|foreshore|"
+        r"illegal dumping|amenities",
+        {"M1": 0.5, "M4": 0.55}),
 }
 
-SECTOR_SCORE = {
-    "construction": 6, "mining": 8, "mining/resources": 8, "energy": 6,
-    "renewables": 8, "waste": 8, "local government": 5, "water": 5,
-    "water/wastewater": 5, "transport": 6, "rail": 4, "roads": 6,
-    "roads/tunnels/bridges": 5, "ports": 4, "infrastructure": 4,
-    "government": 2, "defence": 1, "agriculture": 6, "events": 7,
-    "health": -6, "healthcare": -6, "education": -3, "corrections": -5,
+# ── 2. ASSET TYPE: John's own classification is a strong, clean prior ────────
+ASSET_PRIOR = {
+    "off_grid_solar_security":        {"M1": 1.0, "M2": 1.0, "M5": 0.7},
+    "remote_surveillance_monitoring": {"M1": 0.95, "M3": 0.9},
+    "mobile_rapid_deploy_cctv":       {"M5": 1.0, "M1": 0.6},
+    "unmanned_site_monitoring":       {"M1": 0.9, "M3": 0.95},
+    "temporary_event_site_security":  {"M5": 1.0, "M3": 0.5},
+    "license_plate_recognition":      {"M4": 1.0, "M6": 0.9},
+    "critical_infrastructure_security": {"M1": 0.5},
+    "security_operations_centres":    {"M3": 0.85},
+    "access_control_perimeter_security": {},   # neutral — perimeter can be VI, access control isn't
+    "integrated_security_platforms":  {},      # neutral — usually integrator scope
+    "other":                          {},
 }
 
+# ── 3. TEXT EVIDENCE: supplements, never the sole driver ────────────────────
+TEXT_MOATS = {
+    "M1": r"off[- ]grid|no (mains|grid|fixed) power|unpowered|remote (site|area|location|asset)|isolated|"
+          r"no (comms|connectivity)|starlink|satellite|greenfield|rural|regional|outback",
+    "M2": r"solar[- ]powered|solar camera|solar panel|solar surveillance|photovoltaic",
+    "M3": r"24/7|monitor(ing|ed)|alarm response|command centre|control room|virtual patrol|asial|"
+          r"remote monitoring|live monitoring|surveillance service",
+    "M4": r"\bai\b|artificial intelligence|analytics|anpr|number ?plate|licen[cs]e plate|illegal dumping|"
+          r"dumping detection|fire detection|smoke detection|thermal|computer vision|object detection",
+    "M5": r"temporary|relocatable|redeployable|short[- ]term|rapid[- ]deploy|mobile (cctv|camera|surveillance)|"
+          r"trailer|construction (site|phase|period)|site security|hire\b|pop[- ]up",
+    "M6": r"traffic (count|monitor|management|flow|survey)|vehicle (count|detection|movement)|weigh[- ]in[- ]motion|"
+          r"axle count|loadsure|haulage|freight movement|pedestrian count",
+}
+MOAT_NAMES = {
+    "M1": "off-grid/remote", "M2": "solar fleet", "M3": "monitored outcome",
+    "M4": "AI analytics", "M5": "temp/rapid deploy", "M6": "traffic/transport",
+}
+
+# ── 4. DISQUALIFIERS: only fire on real evidence, weighted by specificity ────
 HARD_KILLS = [
-    (r"maintain(ing|enance)? (of )?(the )?existing|existing (cctv|camera|security) (system|network|infrastructure)|legacy system", -25, "maintenance of existing systems"),
-    (r"verkada|genetec|milestone|integriti|inner range|ccure|lenel|third[- ]party (system|camera)", -25, "third-party platform lock-in"),
-    (r"nurse call|duress|intercom|paging system", -22, "in-building electronic security"),
-    (r"\b(ems|scada|cyber ?security|siem|information security|it security)\b|software (platform|tools)", -25, "IT/OT/software security"),
-    (r"fit[- ]?out|refurbish|landscap", -20, "fit-out/refurb works"),
-    (r"locksmith|keying|master key", -20, "locksmith"),
-    (r"lift|elevator|hvac|fire (alarm|panel|system maintenance)", -18, "building services"),
-    (r"upgrade (of )?(the )?existing|replacement of (the )?existing", -16, "upgrade/replace installed systems"),
+    (r"maintain(ing|enance)? of (the )?existing|existing (cctv|camera|security) (system|network)|legacy system|"
+     r"renewals? and replacement", 34, "maintenance of existing system"),
+    (r"verkada|genetec|milestone|integriti|inner range|c[·.]?cure|lenel|gallagher", 34, "third-party platform lock-in"),
+    (r"nurse call|duress (alarm|system)|intercom|paging system", 30, "in-building electronics"),
+    (r"cyber ?security|\bsiem\b|information security|\bit security\b|\bot security\b", 34, "IT/OT security"),
+    (r"fit[- ]?out|refurbishment|landscaping|locksmith|master key", 28, "fit-out/refurb/locksmith"),
+    (r"\blift\b|elevator|\bhvac\b|fire (alarm|panel|sprinkler)|cleaning services|building services", 26, "building services"),
+    (r"screening (services|equipment)|x[- ]ray|weapons? detection|body[- ]?worn", 26, "screening/body-worn"),
 ]
-
 SOFT_FLAGS = [
-    (r"guard(s|ing)?\b|manned|static security|patrol(s|ling)?|concierge", -14, "guarding in scope"),
-    (r"permanent (cctv|camera|installation)|fixed (cctv|camera|pole)|supply,? (install(ation)?|and install)", -12, "fixed-install component"),
-    (r"access control (system|upgrade|installation|and)", -10, "access-control works"),
-    (r"cabling|fibre|fiber|structured network|network infrastructure|conduit|trench", -12, "cabling/network works"),
-    (r"indoor|in[- ]building|internal (cctv|camera)", -10, "indoor scope"),
-    (r"body[- ]?worn", -12, "body-worn"),
-    (r"weapons? detection|x[- ]ray|screening", -12, "screening tech"),
-    (r"panel|standing offer|preferred supplier", -5, "panel — price-comparison dynamic"),
-    (r"repairs", -8, "repair scope"),
+    (r"guard(s|ing)\b|manned (guard|security)|static security|concierge|patrol officer", 13, "guarding in scope"),
+    (r"permanent (cctv|camera|installation)|fixed (cctv|camera|pole)|supply,? (and )?install", 11, "fixed-install component"),
+    (r"access control", 9, "access-control works"),
+    (r"cabling|fibre|fiber|conduit|trench(ing)?|structured network", 10, "cabling/civil works"),
+    (r"indoor|in[- ]building|internal (cctv|camera)|corridor", 9, "indoor scope"),
+    (r"panel|standing offer|preferred supplier|prequalification", 5, "panel dynamic"),
 ]
 
-MOAT_SCALE = {0: 0, 1: 14, 2: 30, 3: 42, 4: 50, 5: 56, 6: 60}
+SECTOR_ADJ = {
+    "energy": 7, "renewables": 9, "mining": 9, "mining/resources": 9, "resources": 8,
+    "water": 5, "waste": 8, "construction": 7, "local government": 5, "councils": 5,
+    "transport": 5, "roads": 6, "ports": 4, "agriculture": 7, "events": 6,
+    "infrastructure": 5, "utilities": 6, "rail": 2, "defence": 0, "government": 1,
+    "health": -9, "healthcare": -9, "education": -4, "corrections": -7, "justice": -5,
+}
+
+ACTIONABLE = {
+    "EOI": "ACT NOW", "Open Tender": "ACT NOW", "Open Tender (RFP)": "ACT NOW",
+    "Open Tender (RFT)": "ACT NOW", "RFQ": "ACT NOW", "RFT": "ACT NOW",
+    "Panel/Standing Offer": "ACT NOW", "ROI": "ACT NOW", "Registration of Interest": "ACT NOW",
+    "Pre-market/Upcoming": "MONITOR", "EPC package": "BD PLAY",
+    "Compliance-driven uplift": "BD PLAY", "Open Grant": "MONITOR",
+}
+
+def _txt(row):
+    return " ".join(str(row.get(f, "") or "") for f in
+                    ("project_name","signal_summary","notes","stage","asset_type","sector","opportunity_type")).lower()
 
 def score_project(row):
-    text = " ".join([
-        row.get("project_name", ""), row.get("signal_summary", ""),
-        row.get("notes", ""), row.get("stage", ""),
-        row.get("opportunity_type", ""),
-        row.get("asset_type", "").replace("_", " "),
-        row.get("sector", ""),
-    ]).lower()
+    text = _txt(row)
 
-    moats = []
-    for name, pat in MOATS:
+    # Is an actual security/surveillance scope stated, or are we inferring it
+    # purely from what kind of project this is?
+    scope_stated = bool(re.search(
+        r"cctv|surveillance|security (system|service|package|work|camera|solution|uplift|upgrade)|"
+        r"camera|monitoring|access control|alarm|perimeter", text))
+    scope_detailed = bool(re.search(
+        r"(scope|requirement|specification|deliverable|work package|package of work|services include|"
+        r"comprising|covering)", text)) and scope_stated
+
+    # --- accumulate moat strength 0..1 from three independent sources ---
+    strength = {k: 0.0 for k in MOAT_NAMES}
+    why = []
+
+    arche_hits = []
+    for aname, (pat, awards) in ARCHETYPES.items():
         if re.search(pat, text):
-            moats.append(name)
-    for m in ASSET_MOAT.get(row.get("asset_type", ""), []):
-        if m not in moats:
-            moats.append(m)
-    moats.sort()
-    nm = len(moats)
+            arche_hits.append(aname)
+            for m, w in awards.items():
+                strength[m] = max(strength[m], w)
+    if arche_hits:
+        why.append("project type: " + ", ".join(a.replace("_", " ") for a in arche_hits[:2]))
 
-    score = 25 + MOAT_SCALE.get(nm, 56)
-    score += SECTOR_SCORE.get(row.get("sector", "").strip().lower(), 0)
+    is_building = "vertical_building" in arche_hits
+    at = (row.get("asset_type") or "").strip().lower()
+    if not is_building:
+        # asset_type is John's classifier and is sometimes wrong, so it needs
+        # corroboration from the project archetype before it can carry a row alone
+        corroborated = bool([a for a in arche_hits if a != "council_open"])
+        for m, w in ASSET_PRIOR.get(at, {}).items():
+            strength[m] = max(strength[m], w if corroborated else w * 0.55)
+        if ASSET_PRIOR.get(at):
+            why.append(f"asset class: {at.replace('_',' ')}"
+                       + ("" if corroborated else " (unconfirmed)"))
 
-    flags = []
-    for pat, w, label in HARD_KILLS:
+    for m, pat in TEXT_MOATS.items():
         if re.search(pat, text):
-            score += w
-            flags.append("HARD: " + label)
+            strength[m] = max(strength[m], 0.8)
 
-    softmult = 1.0 if nm <= 1 else (0.6 if nm == 2 else 0.35)
-    for pat, w, label in SOFT_FLAGS:
+    if is_building:
+        # A library/hospital/office build is not an open-air site: the off-grid,
+        # solar and relocatable angles cannot apply however the blurb is worded.
+        for m in ("M1", "M2", "M5"):
+            strength[m] = 0.0
+        why = ["vertical building — open-air angles do not apply"]
+
+    moats = [m for m, v in strength.items() if v >= 0.5]
+    moat_count = len(moats)
+    moat_mass = sum(strength[m] for m in moats)
+
+    # --- base fit from moat mass (not raw count) ---
+    fit = 22 + min(52, moat_mass * 15)
+
+    sec = (row.get("sector") or "").strip().lower()
+    sec_adj = SECTOR_ADJ.get(sec)
+    if sec_adj is None:          # fuzzy: "energy (renewables)" -> best matching key
+        cands = [v for k, v in SECTOR_ADJ.items() if k in sec]
+        sec_adj = max(cands) if cands else 0
+    fit += sec_adj
+
+    # --- disqualifiers ---
+    flags, hard_hit = [], False
+    for pat, pen, label in HARD_KILLS:
         if re.search(pat, text):
-            score += w * softmult
+            fit -= pen; flags.append("KILL: " + label); hard_hit = True
+    for pat, pen, label in SOFT_FLAGS:
+        if re.search(pat, text):
+            # soft flags scale down when VI holds a genuinely broad moat set
+            scale = 1.0 if moat_mass < 1.8 else (0.65 if moat_mass < 2.8 else 0.4)
+            fit -= pen * scale
             flags.append(label)
 
-    loc = row.get("location", "").upper()
-    if not ("AU" in loc or "NZ" in loc):
-        score -= 25
-        flags.append("HARD: outside AU/NZ")
+    fit = max(0, min(100, round(fit)))
 
-    score = int(round(max(0, min(100, score))))
-    commodity = nm == 0
-    if commodity:
-        score = min(score, 45)
+    # Confidence = do we know there is real security work here?
+    if scope_detailed:   confidence = "HIGH"
+    elif scope_stated:   confidence = "MEDIUM"
+    else:                confidence = "LOW"
 
-    verdict = "GO" if score >= 70 else ("MAYBE" if score >= 50 else "PASS")
+    # --- actionability is a SEPARATE axis ---
+    opp = (row.get("opportunity_type") or "").strip()
+    bucket = ACTIONABLE.get(opp)
+    if bucket is None:
+        bucket = "ACT NOW" if re.search(r"tender|eoi|rfp|rft|rfq|quotation|expression of interest", opp.lower()) \
+                 else ("MONITOR" if re.search(r"pre-market|upcoming|planning|announced|future", (opp+text[:200]).lower())
+                       else "REVIEW")
 
-    ot = row.get("opportunity_type", "")
-    stage = row.get("stage", "")
-    if ot == "Pre-market/Upcoming":
-        action = "MONITOR (pre-market)"
-    elif ot in ("EPC package", "Compliance-driven uplift"):
-        action = "BD PLAY (sell direct)"
-    elif re.search(r"open|eoi|rfq|rft|rfp|tender|panel|grant", (ot + " " + stage).lower()):
-        action = "ACT NOW (open)"
+    # --- verdict: LOW confidence can't be a PASS, it's a NEEDS DOC ---
+    if hard_hit:
+        verdict = "PASS"
+    elif fit >= 70 and confidence == "HIGH":
+        verdict = "GO"
+    elif fit >= 70 and confidence != "HIGH":
+        # strong signals but we cannot see the actual scope — this is the
+        # "3-line description" case the team keeps hitting. Pull the pack.
+        verdict = "NEEDS DOC"
+    elif fit >= 50:
+        verdict = "MAYBE"
+    elif bucket == "ACT NOW" and moat_count >= 2 and not is_building:
+        # A live, open tender where VI holds two or more genuine angles is never
+        # auto-killed. A false PASS here costs a real opportunity; a false MAYBE
+        # costs one line of human review on Wednesday.
+        verdict = "MAYBE"
+    elif fit >= 38 and confidence != "HIGH" and bucket == "ACT NOW" and moat_count >= 2:
+        verdict = "NEEDS DOC"
     else:
-        action = "REVIEW"
+        verdict = "PASS"
+
+    commodity = "yes" if (moat_count == 0 and confidence != "LOW" and not hard_hit) else "no"
+    if commodity == "yes":
+        fit = min(fit, 44)
+        if verdict == "GO": verdict = "MAYBE"
 
     return {
-        "doability_score": score,
+        "doability_score": fit,
         "verdict": verdict,
-        "action_bucket": action,
-        "moats": "; ".join(moats),
-        "moat_count": nm,
-        "risk_flags": "; ".join(flags[:6]),
-        "commodity": "yes" if commodity else "",
+        "action_bucket": bucket,
+        "confidence": confidence,
+        "moats": "; ".join(f"{m} {MOAT_NAMES[m]}" for m in sorted(moats)),
+        "moat_count": moat_count,
+        "risk_flags": "; ".join(flags),
+        "commodity": commodity,
+        "why": "; ".join(why),
     }
 
 
@@ -455,7 +591,7 @@ def ingest_projects(csv_text, run_id, db):
                 doability_score=?, verdict=?, action_bucket=?, moats=?, moat_count=?,
                 risk_flags=?, commodity=?, last_seen_at=?, run_id=?,
                 stage=?, opportunity_type=?, priority_score=?, signal_summary=?, notes=?, active=?,
-                closing_date=?, is_closed=?, location_flag=?
+                closing_date=?, is_closed=?, location_flag=?, confidence=?, why_fit=?
                 WHERE project_hash=?""",
                 (scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
@@ -463,7 +599,8 @@ def ingest_projects(csv_text, run_id, db):
                  row.get("stage",""), row.get("opportunity_type",""),
                  row.get("priority_score",""), row.get("signal_summary",""),
                  row.get("notes",""), row.get("active",""),
-                 closing_date, is_closed, location_flag, h))
+                 closing_date, is_closed, location_flag,
+                 scores.get("confidence"), scores.get("why"), h))
             # Regenerate summary if score changed significantly or no summary yet
             if not existing["ai_summary"]:
                 new_for_summary.append((h, proj_data))
@@ -476,15 +613,16 @@ def ingest_projects(csv_text, run_id, db):
                  signal_summary, notes, active,
                  doability_score, verdict, action_bucket, moats, moat_count,
                  risk_flags, commodity, first_seen_at, last_seen_at, run_id,
-                 closing_date, is_closed, location_flag)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 closing_date, is_closed, location_flag, confidence, why_fit)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (h, vals["project_name"], vals["customer"], vals["location"],
                  vals["asset_type"], vals["sector"], vals["stage"], vals["year"],
                  vals["source_url"], vals["socI_relevance"], vals["opportunity_type"],
                  vals["priority_score"], vals["signal_summary"], vals["notes"], vals["active"],
                  scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
-                 now, now, run_id, closing_date, is_closed, location_flag))
+                 now, now, run_id, closing_date, is_closed, location_flag,
+                 scores.get("confidence"), scores.get("why")))
             new_for_summary.append((h, proj_data))
 
     db.commit()
