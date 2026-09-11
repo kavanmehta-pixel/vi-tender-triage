@@ -314,7 +314,7 @@ async function checkHealth(){
     if(hh.ephemeral_warning){
       const b=document.getElementById('alertBanner');
       b.className='alert-banner show';
-      b.innerHTML='<b>⚠ Data will not survive the next deploy.</b> The database is stored inside the '+
+      b.innerHTML='<b>⚠ Data will not survive the next deploy.</b> Storage backend: <code>'+(hh.backend||'?')+'</code>. The database is stored inside the '+
         'app container, not on a persistent volume — triage decisions and comments will be wiped when this app next redeploys.<br>'+
         'Fix in Railway: set <code>DB_PATH=/data/vi_triage.db</code> and mount a Volume at <code>/data</code>. '+
         'Currently using <code>'+(hh.db_path||'?')+'</code>.';

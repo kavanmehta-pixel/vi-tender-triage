@@ -1,21 +1,18 @@
 import os, json, csv, io, re, sqlite3, hashlib, secrets
 from datetime import datetime, timedelta, date
 from flask import Flask, request, jsonify, render_template, g
+import db as dbx
 
 app = Flask(__name__)
-DB_PATH = os.environ.get("DB_PATH", "vi_triage.db")
+DB_PATH = dbx.location()
 
-# Guard: if DB_PATH is not pointed at a mounted Railway volume the database lives
-# inside the deploy image and is silently replaced on every push. That destroys
-# triage decisions and comments. Surface it loudly rather than losing data again.
-EPHEMERAL_DB = not DB_PATH.startswith("/data")
+EPHEMERAL_DB = dbx.is_ephemeral()
 
 # ─── Database ───────────────────────────────────────────────────────────
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        g.db = dbx.connect()
     return g.db
 
 @app.teardown_appcontext
@@ -25,7 +22,7 @@ def close_db(exc):
         db.close()
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
+    db = dbx.connect()
     db.executescript("""
     CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,34 +106,13 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_verdict ON projects(verdict);
     """)
     # Migrations for existing DBs
-    try:
-        db.execute("ALTER TABLE projects ADD COLUMN closing_date TEXT")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE projects ADD COLUMN is_closed INTEGER DEFAULT 0")
-    except Exception:
-        pass
     for _c, _t in (("confidence","TEXT"), ("hidden","INTEGER DEFAULT 0"),
-                   ("merged_into","TEXT"), ("dup_key","TEXT")):
-        try:
-            db.execute(f"ALTER TABLE projects ADD COLUMN {_c} {_t}")
-        except Exception:
-            pass
+                   ("merged_into","TEXT"), ("dup_key","TEXT"), ("why_fit","TEXT"),
+                   ("ai_summary","TEXT"), ("location_flag","TEXT"),
+                   ("closing_date","TEXT"), ("is_closed","INTEGER DEFAULT 0")):
+        dbx.add_column(db, "projects", _c, _t)
     try:
         db.execute("CREATE INDEX IF NOT EXISTS idx_dup_key ON projects(dup_key)")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE projects ADD COLUMN why_fit TEXT")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE projects ADD COLUMN ai_summary TEXT")
-    except Exception:
-        pass
-    try:
-        db.execute("ALTER TABLE projects ADD COLUMN location_flag TEXT")
     except Exception:
         pass
     try:
@@ -166,11 +142,9 @@ def init_db():
     except Exception:
         pass
     # Pipeline tracking columns (Aug 14 meeting: status, owner, next steps, scope)
-    for col, coltype in [("status","TEXT"),("owner","TEXT"),("next_steps","TEXT"),("scope","TEXT"),("status_updated_at","TEXT")]:
-        try:
-            db.execute(f"ALTER TABLE triage ADD COLUMN {col} {coltype}")
-        except Exception:
-            pass
+    for col, coltype in [("status","TEXT"),("owner","TEXT"),("next_steps","TEXT"),
+                         ("scope","TEXT"),("status_updated_at","TEXT")]:
+        dbx.add_column(db, "triage", col, coltype)
     db.commit()
     db.close()
 
@@ -1008,11 +982,16 @@ def api_runs():
 def api_health():
     db = get_db()
     def count(t):
-        try: return db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        except Exception: return None
+        try:
+            row = db.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()
+            return row["n"] if row is not None else None
+        except Exception:
+            db.rollback()
+            return None
     return jsonify({
-        "db_path": DB_PATH,
-        "ephemeral_warning": EPHEMERAL_DB,
+        "backend": dbx.backend(),
+        "db_path": dbx.location(),
+        "ephemeral_warning": dbx.is_ephemeral(),
         "projects": count("projects"),
         "triage_decisions": count("triage"),
         "comments": count("comments"),
