@@ -56,7 +56,10 @@ def init_db():
         run_id TEXT,
         closing_date TEXT,
         is_closed INTEGER DEFAULT 0,
-        confidence TEXT
+        confidence TEXT,
+        hidden INTEGER DEFAULT 0,
+        merged_into TEXT,
+        dup_key TEXT
     );
     CREATE TABLE IF NOT EXISTS contacts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,8 +117,14 @@ def init_db():
         db.execute("ALTER TABLE projects ADD COLUMN is_closed INTEGER DEFAULT 0")
     except Exception:
         pass
+    for _c, _t in (("confidence","TEXT"), ("hidden","INTEGER DEFAULT 0"),
+                   ("merged_into","TEXT"), ("dup_key","TEXT")):
+        try:
+            db.execute(f"ALTER TABLE projects ADD COLUMN {_c} {_t}")
+        except Exception:
+            pass
     try:
-        db.execute("ALTER TABLE projects ADD COLUMN confidence TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_dup_key ON projects(dup_key)")
     except Exception:
         pass
     try:
@@ -528,6 +537,22 @@ def score_project(row):
     }
 
 
+_DUP_NOISE = re.compile(
+    r"\b(tender|rft|rfp|rfq|eoi|expression of interest|request for|open|contract|"
+    r"no\.?\s*\w+|20\d\d|stage \d|work package|package|invitation|notice)\b")
+
+def dup_key(row):
+    """Collapse the same tender listed by many aggregators onto one key.
+    Strips bracketed asides, procurement boilerplate and punctuation."""
+    def norm(s):
+        s = (s or "").lower()
+        s = re.sub(r"\([^)]*\)", " ", s)
+        s = _DUP_NOISE.sub(" ", s)
+        s = re.sub(r"[^a-z0-9 ]", " ", s)
+        return " ".join(s.split())
+    return (norm(row.get("project_name")) + "|" + norm(row.get("customer"))[:40]).strip()
+
+
 def make_hash(row):
     key = (row.get("project_name", "") + "|" + row.get("customer", "") + "|" + row.get("source_url", "")).strip().lower()
     return hashlib.sha256(key.encode()).hexdigest()[:16]
@@ -560,6 +585,7 @@ def ingest_projects(csv_text, run_id, db):
             continue
         total += 1
         h = make_hash(row)
+        dk = dup_key(row)
         scores = score_project(row)
 
         # Location flag + score adjustment
@@ -596,7 +622,7 @@ def ingest_projects(csv_text, run_id, db):
                 doability_score=?, verdict=?, action_bucket=?, moats=?, moat_count=?,
                 risk_flags=?, commodity=?, last_seen_at=?, run_id=?,
                 stage=?, opportunity_type=?, priority_score=?, signal_summary=?, notes=?, active=?,
-                closing_date=?, is_closed=?, location_flag=?, confidence=?, why_fit=?
+                closing_date=?, is_closed=?, location_flag=?, confidence=?, why_fit=?, dup_key=?
                 WHERE project_hash=?""",
                 (scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
@@ -605,7 +631,7 @@ def ingest_projects(csv_text, run_id, db):
                  row.get("priority_score",""), row.get("signal_summary",""),
                  row.get("notes",""), row.get("active",""),
                  closing_date, is_closed, location_flag,
-                 scores.get("confidence"), scores.get("why"), h))
+                 scores.get("confidence"), scores.get("why"), dk, h))
             # Regenerate summary if score changed significantly or no summary yet
             if not existing["ai_summary"]:
                 new_for_summary.append((h, proj_data))
@@ -618,8 +644,8 @@ def ingest_projects(csv_text, run_id, db):
                  signal_summary, notes, active,
                  doability_score, verdict, action_bucket, moats, moat_count,
                  risk_flags, commodity, first_seen_at, last_seen_at, run_id,
-                 closing_date, is_closed, location_flag, confidence, why_fit)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 closing_date, is_closed, location_flag, confidence, why_fit, dup_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (h, vals["project_name"], vals["customer"], vals["location"],
                  vals["asset_type"], vals["sector"], vals["stage"], vals["year"],
                  vals["source_url"], vals["socI_relevance"], vals["opportunity_type"],
@@ -627,7 +653,7 @@ def ingest_projects(csv_text, run_id, db):
                  scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
                  now, now, run_id, closing_date, is_closed, location_flag,
-                 scores.get("confidence"), scores.get("why")))
+                 scores.get("confidence"), scores.get("why"), dk))
             new_for_summary.append((h, proj_data))
 
     db.commit()
@@ -745,6 +771,122 @@ def triage_summary():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/duplicates")
+def api_duplicates():
+    """Groups of rows that are the same tender republished by several aggregators."""
+    db = get_db()
+    # Default to groups that actually affect the list you are looking at. A group
+    # of long-closed tenders is noise: merging it changes nothing on screen.
+    include_closed = request.args.get("include_closed", "0") == "1"
+    rows = db.execute("""
+        SELECT p.*, t.decision AS triage_decision,
+               (SELECT COUNT(*) FROM comments c WHERE c.project_hash=p.project_hash) AS comment_count
+        FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
+        WHERE (p.hidden=0 OR p.hidden IS NULL) AND p.merged_into IS NULL
+          AND p.dup_key IS NOT NULL AND p.dup_key != ''
+        ORDER BY p.doability_score DESC
+    """).fetchall()
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["dup_key"], []).append(dict(r))
+    out = []
+    for k, members in groups.items():
+        if len(members) < 2:
+            continue
+        open_members = [m for m in members if not m.get("is_closed")]
+        if not include_closed and len(open_members) < 2:
+            continue
+        if not include_closed:
+            members = open_members
+        for m in members:
+            m["deadline_status"] = deadline_status(m.get("closing_date"))
+            m["source_domain"] = re.sub(r"^https?://(www\.)?([^/]+).*$", r"\2", m.get("source_url") or "")
+        # suggest the richest row as canonical: has a decision, then most detail
+        members.sort(key=lambda m: (
+            0 if m.get("triage_decision") else 1,
+            -(m.get("comment_count") or 0),
+            -len((m.get("signal_summary") or "") + (m.get("notes") or "")),
+        ))
+        out.append({"dup_key": k, "count": len(members),
+                    "open_count": sum(1 for m in members if not m.get("is_closed")),
+                    "suggested_canonical": members[0]["project_hash"], "members": members})
+    out.sort(key=lambda g: -g["count"])
+    return jsonify(out)
+
+
+@app.route("/api/merge", methods=["POST"])
+def api_merge():
+    """Fold duplicates into one canonical row. Triage decisions and comments from
+    every merged row are preserved and moved across — nothing is destroyed."""
+    db = get_db()
+    data = request.json or {}
+    canonical = data.get("canonical")
+    others = [h for h in (data.get("others") or []) if h != canonical]
+    if not canonical or not others:
+        return jsonify({"ok": False, "error": "need canonical and others"}), 400
+    now = datetime.utcnow().isoformat()
+    moved_comments = 0
+    adopted = None
+    existing = db.execute("SELECT decision FROM triage WHERE project_hash=?", (canonical,)).fetchone()
+    for h in others:
+        # carry comments over
+        cur = db.execute("UPDATE comments SET project_hash=? WHERE project_hash=?", (canonical, h))
+        moved_comments += cur.rowcount or 0
+        # adopt a decision only if the canonical row does not already have one
+        if not (existing and existing["decision"]):
+            t = db.execute("SELECT * FROM triage WHERE project_hash=? AND decision IS NOT NULL AND decision!=''", (h,)).fetchone()
+            if t and not adopted:
+                db.execute("""INSERT INTO triage (project_hash,decision,reason,decided_by,decided_at,status,owner,next_steps,scope,status_updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(project_hash) DO UPDATE SET decision=excluded.decision, reason=excluded.reason,
+                    decided_by=excluded.decided_by, decided_at=excluded.decided_at, status=excluded.status,
+                    owner=excluded.owner, next_steps=excluded.next_steps, scope=excluded.scope""",
+                    (canonical, t["decision"], t["reason"], t["decided_by"], t["decided_at"],
+                     t["status"], t["owner"], t["next_steps"], t["scope"], now))
+                adopted = t["decision"]
+        db.execute("UPDATE projects SET merged_into=?, hidden=1 WHERE project_hash=?", (canonical, h))
+    db.commit()
+    return jsonify({"ok": True, "merged": len(others),
+                    "comments_moved": moved_comments, "decision_adopted": adopted})
+
+
+@app.route("/api/hide", methods=["POST"])
+def api_hide():
+    """Soft-hide (reversible). Never deletes a row or its history."""
+    db = get_db()
+    data = request.json or {}
+    hashes = data.get("hashes") or ([data["hash"]] if data.get("hash") else [])
+    hide = 1 if data.get("hidden", True) else 0
+    if not hashes:
+        return jsonify({"ok": False, "error": "no hashes"}), 400
+    for h in hashes:
+        db.execute("UPDATE projects SET hidden=?, merged_into=CASE WHEN ?=0 THEN NULL ELSE merged_into END WHERE project_hash=?", (hide, hide, h))
+    db.commit()
+    return jsonify({"ok": True, "updated": len(hashes), "hidden": bool(hide)})
+
+
+@app.route("/api/archive")
+def api_archive():
+    """Everything set aside: passed, hidden, or merged away."""
+    db = get_db()
+    rows = db.execute("""
+        SELECT p.*, t.decision AS triage_decision, t.reason AS triage_reason,
+               t.owner AS triage_owner,
+               (SELECT COUNT(*) FROM comments c WHERE c.project_hash=p.project_hash) AS comment_count
+        FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
+        WHERE p.hidden=1 OR p.merged_into IS NOT NULL OR t.decision='pass'
+        ORDER BY p.doability_score DESC
+    """).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["deadline_status"] = deadline_status(d.get("closing_date"))
+        d["archive_reason"] = ("merged" if d.get("merged_into") else
+                               "passed" if d.get("triage_decision") == "pass" else "hidden")
+        out.append(d)
+    return jsonify(out)
+
+
 @app.route("/api/pipeline")
 def api_pipeline():
     """All tenders with an active triage decision or status — the working pipeline
@@ -802,7 +944,7 @@ def dashboard():
 def api_projects():
     db = get_db()
     hide_closed = request.args.get("hide_closed", "1") == "1"
-    where = "WHERE p.active = 'true'"
+    where = "WHERE p.active = 'true' AND (p.hidden = 0 OR p.hidden IS NULL) AND p.merged_into IS NULL"
     if hide_closed:
         where += " AND (p.is_closed = 0 OR p.is_closed IS NULL)"
     rows = db.execute(f"""

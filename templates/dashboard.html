@@ -165,6 +165,58 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
   .detail-inner{grid-template-columns:1fr}
   th:nth-child(6),td:nth-child(6),th:nth-child(7),td:nth-child(7){display:none}
 }
+
+/* ── data-loss banner ── */
+.alert-banner{display:none;background:linear-gradient(90deg,rgba(224,85,99,.18),rgba(224,85,99,.07));
+  border:1px solid rgba(224,85,99,.45);border-left:4px solid var(--pass);border-radius:9px;
+  padding:13px 16px;margin-bottom:16px;font-size:13px;line-height:1.6}
+.alert-banner.show{display:block}
+.alert-banner b{color:var(--pass)}
+.alert-banner code{background:rgba(0,0,0,.35);padding:1px 6px;border-radius:4px;font-size:12px;color:var(--amber)}
+/* ── toasts ── */
+#toasts{position:fixed;bottom:22px;right:22px;display:flex;flex-direction:column;gap:9px;z-index:999}
+.toast{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--go);
+  border-radius:8px;padding:11px 15px;font-size:13px;color:var(--text);box-shadow:0 8px 26px rgba(0,0,0,.5);
+  min-width:230px;animation:slideIn .22s ease-out}
+.toast.err{border-left-color:var(--pass)}
+.toast.warn{border-left-color:var(--amber)}
+.toast .undo{color:var(--amber);cursor:pointer;font-weight:700;margin-left:12px;text-decoration:underline}
+@keyframes slideIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}
+/* ── duplicate groups ── */
+.dupgroup{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:12px;overflow:hidden}
+.dupgroup-head{display:flex;align-items:center;gap:12px;padding:13px 16px;background:var(--panel2);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.dupgroup-title{font-weight:600;flex:1;min-width:220px;font-size:13.5px}
+.dupcount{background:rgba(245,166,35,.15);color:var(--amber);border:1px solid rgba(245,166,35,.35);
+  border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700;white-space:nowrap}
+.dup-member{display:flex;align-items:center;gap:11px;padding:9px 16px;border-bottom:1px solid var(--line);font-size:12.5px}
+.dup-member:last-child{border-bottom:none}
+.dup-member.is-canon{background:rgba(46,204,143,.055)}
+.dup-member input[type=radio]{cursor:pointer;width:15px;height:15px;accent-color:var(--go);flex-shrink:0}
+.dup-src{color:var(--dim);font-size:11.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.canon-tag{background:var(--go-dim);color:var(--go);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700}
+.keeps-tag{background:rgba(91,157,217,.14);color:var(--mon);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:7px;
+  padding:7px 15px;font-size:12.5px;font-weight:600;cursor:pointer;transition:all .13s}
+.btn:hover{border-color:var(--amber);color:var(--amber)}
+.btn:focus-visible,select:focus-visible,input:focus-visible,.triage-opt:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.btn-primary{background:var(--amber);color:#000;border-color:var(--amber)}
+.btn-primary:hover{opacity:.87;color:#000}
+.btn-danger:hover{border-color:var(--pass);color:var(--pass)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.arch-reason{border-radius:4px;padding:1px 8px;font-size:10.5px;font-weight:700}
+.ar-passed{background:var(--pass-dim);color:var(--pass)}
+.ar-merged{background:rgba(167,139,250,.14);color:var(--bd)}
+.ar-hidden{background:rgba(139,152,171,.14);color:var(--muted)}
+.empty{text-align:center;padding:52px 20px;color:var(--muted)}
+.empty h3{font-size:15px;color:var(--text);margin-bottom:7px;font-weight:600}
+.empty p{font-size:13px;line-height:1.6;max-width:430px;margin:0 auto}
+.skel{background:linear-gradient(90deg,var(--panel) 25%,var(--panel2) 50%,var(--panel) 75%);
+  background-size:200% 100%;animation:shimmer 1.3s infinite;border-radius:6px;height:14px;margin:9px 0}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.row-actions{opacity:0;transition:opacity .13s}
+tr.row:hover .row-actions{opacity:1}
+.icon-btn{background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;padding:2px 5px;border-radius:4px}
+.icon-btn:hover{color:var(--pass);background:rgba(224,85,99,.1)}
 </style>
 </head>
 <body>
@@ -177,10 +229,14 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
   <div class="stamp" id="stamp">Loading…<br><a href="/upload">Upload CSVs</a></div>
 </header>
 
-<div class="view-toggle">
+<div class="alert-banner" id="alertBanner" role="alert"></div>
+
+<div class="view-toggle" role="tablist">
   <button id="btnAll" class="on" onclick="setView('all')">All projects</button>
   <button id="btnNew" onclick="setView('new')">New this week<span class="new-badge" id="newBadge">0</span></button>
   <button id="btnPipe" onclick="setView('pipe')">📋 Pipeline<span class="new-badge" id="pipeBadge" style="background:var(--t-full)">0</span></button>
+  <button id="btnDup" onclick="setView('dup')">⧉ Duplicates<span class="new-badge" id="dupBadge" style="background:var(--amber);color:#000">0</span></button>
+  <button id="btnArch" onclick="setView('arch')">🗄 Archive<span class="new-badge" id="archBadge" style="background:var(--dim)">0</span></button>
 </div>
 
 <div class="cards" id="cards"></div>
@@ -214,6 +270,9 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 </table>
 </div>
 <div id="pipeWrap" style="display:none"></div>
+<div id="dupWrap" style="display:none"></div>
+<div id="archWrap" style="display:none"></div>
+<div id="toasts" aria-live="polite"></div>
 
 <div class="foot">
   Doability: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector/flags. <b style="color:var(--text)">Triage decisions and comments persist</b> — re-uploading CSVs won't erase them. <b style="color:var(--needsdoc)">NEEDS DOC</b> = plausible fit but the listing is too thin to judge — pull the requirements pack. Decision key: <span class="badge b-t-full">Full tender</span> → bespoke response · <span class="badge b-t-philip">Philip reach-out</span> → relationship/awareness · <span class="badge b-t-pass">Pass</span> → skip.
@@ -234,7 +293,37 @@ const TRIAGE_OPTS=[
 async function loadData(withClosed){
   return fetch('/api/projects'+(withClosed?'?hide_closed=0':'?hide_closed=1')).then(r=>r.json());
 }
+function toast(msg, kind, undoFn){
+  const box=document.getElementById('toasts');
+  const el=document.createElement('div');
+  el.className='toast'+(kind?' '+kind:'');
+  el.innerHTML=msg;
+  if(undoFn){
+    const u=document.createElement('span'); u.className='undo'; u.textContent='Undo'; u.tabIndex=0;
+    u.onclick=()=>{undoFn(); el.remove();};
+    u.onkeydown=e=>{if(e.key==='Enter'){undoFn(); el.remove();}};
+    el.appendChild(u);
+  }
+  box.appendChild(el);
+  setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(()=>el.remove(),300);}, undoFn?9000:3800);
+}
+
+async function checkHealth(){
+  try{
+    const hh=await fetch('/api/health').then(r=>r.json());
+    if(hh.ephemeral_warning){
+      const b=document.getElementById('alertBanner');
+      b.className='alert-banner show';
+      b.innerHTML='<b>⚠ Data will not survive the next deploy.</b> The database is stored inside the '+
+        'app container, not on a persistent volume — triage decisions and comments will be wiped when this app next redeploys.<br>'+
+        'Fix in Railway: set <code>DB_PATH=/data/vi_triage.db</code> and mount a Volume at <code>/data</code>. '+
+        'Currently using <code>'+(hh.db_path||'?')+'</code>.';
+    }
+  }catch(e){}
+}
+
 async function load(){
+  checkHealth();
   const [all, nw, stats] = await Promise.all([
     loadData(false),
     fetch('/api/projects/new').then(r=>r.json()),
@@ -251,10 +340,7 @@ async function load(){
   document.getElementById('loading').style.display='none';
   document.getElementById('tbl').style.display='';
   // pipeline badge count
-  fetch('/api/pipeline').then(r=>r.json()).then(p=>{
-    const active=p.filter(x=>x.decision!=='pass').length;
-    document.getElementById('pipeBadge').textContent=active;
-  });
+  refreshBadges();
   drawCards(); render();
 }
 async function toggleClosed(){
@@ -268,9 +354,18 @@ function setView(v){
   document.getElementById('btnAll').className=v==='all'?'on':'';
   document.getElementById('btnNew').className=v==='new'?'on':'';
   document.getElementById('btnPipe').className=v==='pipe'?'on':'';
+  document.getElementById('btnDup').className=v==='dup'?'on':'';
+  document.getElementById('btnArch').className=v==='arch'?'on':'';
   filt.card='';
-  if(v==='pipe'){ renderPipeline(); }
-  else { document.getElementById('pipeWrap').style.display='none'; document.getElementById('tableWrap').style.display=''; document.getElementById('cards').style.display=''; document.querySelector('.toolbar').style.display='flex'; drawCards(); render(); }
+  ['pipeWrap','dupWrap','archWrap'].forEach(id=>document.getElementById(id).style.display='none');
+  const standard = (v==='all'||v==='new');
+  document.getElementById('tableWrap').style.display = standard?'':'none';
+  document.getElementById('cards').style.display     = standard?'':'none';
+  document.querySelector('.toolbar').style.display   = standard?'flex':'none';
+  if(v==='pipe') renderPipeline();
+  else if(v==='dup') renderDuplicates();
+  else if(v==='arch') renderArchive();
+  else { drawCards(); render(); }
 }
 function src(){return view==='new'?DATA_NEW:DATA;}
 
@@ -394,7 +489,7 @@ function render(){
       <td>${dlBadge(d)}</td>
       <td>${d.commodity==='yes'?'<span class="badge b-PASS">COMMODITY</span>':(d.moats||'').split('; ').filter(Boolean).map(m=>`<span class="moat" title="${esc(m)}">${m.slice(0,2)}</span>`).join('')}</td>
       <td>${esc(d.sector)}</td>
-      <td class="loc">${esc(d.location)}</td>
+      <td class="loc">${esc(d.location)}<span class="row-actions"> <button class="icon-btn" title="Hide this tender (reversible — goes to Archive)" aria-label="Hide tender" onclick="event.stopPropagation();hideRow('${esc(d.project_hash)}','${esc((d.project_name||'').slice(0,40)).replace(/'/g,"")}')">✕</button></span></td>
     </tr>
     <tr class="detail" id="det${i}" style="display:none"><td colspan="8">
       <div class="detail-inner">
@@ -591,6 +686,139 @@ async function pollSummary(i, hash, d, attempts=0){
     setTimeout(()=>pollSummary(i,hash,d,attempts+1),3000);
   }
 }
+
+
+// ── Duplicates ────────────────────────────────────────────────────────
+let DUPS=[], dupIncludeClosed=false;
+function toggleDupClosed(){ dupIncludeClosed=!dupIncludeClosed; renderDuplicates(); }
+async function renderDuplicates(){
+  const w=document.getElementById('dupWrap'); w.style.display='';
+  w.innerHTML='<div class="skel" style="width:60%"></div><div class="skel" style="width:85%"></div><div class="skel" style="width:70%"></div>';
+  DUPS=await fetch('/api/duplicates'+(dupIncludeClosed?'?include_closed=1':'')).then(r=>r.json());
+  document.getElementById('dupBadge').textContent=DUPS.length;
+  if(!DUPS.length){
+    w.innerHTML='<div class="empty"><h3>No duplicates found</h3><p>Every tender in the active list appears once. '+
+      'Duplicates show up here when the same tender is republished by several aggregator sites.</p>'+
+      '<button class="btn" style="margin-top:14px" onclick="toggleDupClosed()">'+(dupIncludeClosed?'Show only open tenders':'Include closed tenders')+'</button></div>';
+    return;
+  }
+  const collapse=DUPS.reduce((a,g)=>a+g.count-1,0);
+  w.innerHTML=`
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap">
+      <div style="color:var(--muted);font-size:13px;flex:1;min-width:260px">
+        <b style="color:var(--text)">${DUPS.length} groups</b> — the same tender listed by multiple sites.
+        Merging keeps one row and folds the rest away; <b style="color:var(--text)">all triage decisions and comments are carried across</b>, nothing is deleted.
+      </div>
+      <button class="btn" onclick="toggleDupClosed()">${dupIncludeClosed?'Hide closed-only groups':'Include closed tenders'}</button>
+      <button class="btn btn-primary" onclick="mergeAll()">Merge all ${DUPS.length} groups (−${collapse} rows)</button>
+    </div>
+    ${DUPS.map((g,gi)=>`
+      <div class="dupgroup" id="dg-${gi}">
+        <div class="dupgroup-head">
+          <span class="dupcount">${g.count}×</span>
+          <span class="dupgroup-title">${esc(g.members[0].project_name)}</span>
+          <button class="btn" onclick="mergeGroup(${gi})">Merge group</button>
+        </div>
+        ${g.members.map(m=>`
+          <label class="dup-member ${m.project_hash===g.suggested_canonical?'is-canon':''}">
+            <input type="radio" name="canon-${gi}" value="${esc(m.project_hash)}" ${m.project_hash===g.suggested_canonical?'checked':''}>
+            <span class="dup-src">${esc(m.source_domain||'no source')}</span>
+            <span style="color:var(--dim);font-size:11px">score ${m.doability_score}</span>
+            ${m.project_hash===g.suggested_canonical?'<span class="canon-tag">KEEP</span>':''}
+            ${m.triage_decision?'<span class="keeps-tag">has decision</span>':''}
+            ${m.comment_count?`<span class="keeps-tag">💬${m.comment_count}</span>`:''}
+          </label>`).join('')}
+      </div>`).join('')}`;
+}
+
+async function mergeGroup(gi){
+  const g=DUPS[gi];
+  const sel=document.querySelector(`input[name="canon-${gi}"]:checked`);
+  const canonical=sel?sel.value:g.suggested_canonical;
+  const others=g.members.map(m=>m.project_hash).filter(h=>h!==canonical);
+  const r=await fetch('/api/merge',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({canonical,others})}).then(r=>r.json());
+  if(!r.ok){ toast('Merge failed','err'); return; }
+  toast(`Merged ${r.merged} duplicate${r.merged===1?'':'s'}`+
+    (r.comments_moved?` · ${r.comments_moved} comment(s) carried over`:'')+
+    (r.decision_adopted?' · decision kept':''),'', ()=>undoMerge(others));
+  const el=document.getElementById('dg-'+gi); if(el) el.remove();
+  DATA=await loadData(showClosed); refreshBadges();
+}
+
+async function undoMerge(hashes){
+  await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({hashes,hidden:false})});
+  toast('Merge undone','warn');
+  DATA=await loadData(showClosed); renderDuplicates(); refreshBadges();
+}
+
+async function mergeAll(){
+  if(!confirm(`Merge all ${DUPS.length} duplicate groups?\n\nOne row is kept per group. Triage decisions and comments are carried across — nothing is deleted, and anything merged can be restored from the Archive tab.`)) return;
+  let n=0;
+  for(const g of DUPS){
+    const others=g.members.map(m=>m.project_hash).filter(h=>h!==g.suggested_canonical);
+    const r=await fetch('/api/merge',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({canonical:g.suggested_canonical,others})}).then(r=>r.json());
+    if(r.ok) n+=r.merged;
+  }
+  toast(`Merged ${n} duplicate rows`);
+  DATA=await loadData(showClosed); renderDuplicates(); refreshBadges();
+}
+
+// ── Archive ───────────────────────────────────────────────────────────
+async function renderArchive(){
+  const w=document.getElementById('archWrap'); w.style.display='';
+  w.innerHTML='<div class="skel" style="width:55%"></div><div class="skel" style="width:80%"></div>';
+  const A=await fetch('/api/archive').then(r=>r.json());
+  document.getElementById('archBadge').textContent=A.length;
+  if(!A.length){
+    w.innerHTML='<div class="empty"><h3>Archive is empty</h3><p>Tenders you mark as <b>Pass</b>, hide, or merge away are kept here. '+
+      'Nothing is ever deleted — you can restore anything back to the active list.</p></div>';
+    return;
+  }
+  const lbl={passed:'Passed',merged:'Merged away',hidden:'Hidden'};
+  w.innerHTML=`
+    <div style="color:var(--muted);font-size:13px;margin-bottom:12px">
+      <b style="color:var(--text)">${A.length} set aside.</b> Nothing here is deleted — restore anything back to the active list.
+    </div>
+    <table><thead><tr><th>Tender / Customer</th><th>Why archived</th><th>Score</th><th>Reason given</th><th>Loc</th><th></th></tr></thead><tbody>
+    ${A.map(p=>`<tr class="row">
+      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}
+        <div class="cust">${esc(p.customer)}${p.comment_count?` <span class="comment-dot">💬${p.comment_count}</span>`:''}</div></td>
+      <td><span class="arch-reason ar-${p.archive_reason}">${lbl[p.archive_reason]}</span></td>
+      <td>${p.doability_score}</td>
+      <td style="color:var(--muted);font-size:12px;max-width:260px">${esc(p.triage_reason||'—')}</td>
+      <td class="loc">${esc(p.location)}</td>
+      <td>${p.archive_reason!=='passed'?`<button class="btn" onclick="restore('${esc(p.project_hash)}')">Restore</button>`:''}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+async function restore(hash){
+  await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({hashes:[hash],hidden:false})});
+  toast('Restored to active list');
+  DATA=await loadData(showClosed); renderArchive(); refreshBadges();
+}
+
+async function hideRow(hash,name){
+  await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({hashes:[hash],hidden:true})});
+  toast(`Hidden: ${name}`, 'warn', async()=>{
+    await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({hashes:[hash],hidden:false})});
+    DATA=await loadData(showClosed); render(); refreshBadges(); toast('Restored');
+  });
+  DATA=await loadData(showClosed); render(); refreshBadges();
+}
+
+async function refreshBadges(){
+  fetch('/api/duplicates').then(r=>r.json()).then(d=>document.getElementById('dupBadge').textContent=d.length);
+  fetch('/api/archive').then(r=>r.json()).then(d=>document.getElementById('archBadge').textContent=d.length);
+  fetch('/api/pipeline').then(r=>r.json()).then(p=>document.getElementById('pipeBadge').textContent=p.filter(x=>x.decision!=='pass').length);
+}
+
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.querySelectorAll('.detail').forEach(d=>d.style.display='none'); });
 
 document.getElementById('q').oninput=e=>{filt.q=e.target.value.toLowerCase();render();};
 document.getElementById('fVerdict').onchange=e=>{filt.verdict=e.target.value;render();};
