@@ -5,6 +5,11 @@ from flask import Flask, request, jsonify, render_template, g
 app = Flask(__name__)
 DB_PATH = os.environ.get("DB_PATH", "vi_triage.db")
 
+# Guard: if DB_PATH is not pointed at a mounted Railway volume the database lives
+# inside the deploy image and is silently replaced on every push. That destroys
+# triage decisions and comments. Surface it loudly rather than losing data again.
+EPHEMERAL_DB = not DB_PATH.startswith("/data")
+
 # ─── Database ───────────────────────────────────────────────────────────
 
 def get_db():
@@ -855,6 +860,21 @@ def api_runs():
     db = get_db()
     rows = db.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT 20").fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/health")
+def api_health():
+    db = get_db()
+    def count(t):
+        try: return db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        except Exception: return None
+    return jsonify({
+        "db_path": DB_PATH,
+        "ephemeral_warning": EPHEMERAL_DB,
+        "projects": count("projects"),
+        "triage_decisions": count("triage"),
+        "comments": count("comments"),
+    })
 
 
 @app.route("/api/stats")
