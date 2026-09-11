@@ -109,7 +109,10 @@ def init_db():
     for _c, _t in (("confidence","TEXT"), ("hidden","INTEGER DEFAULT 0"),
                    ("merged_into","TEXT"), ("dup_key","TEXT"), ("why_fit","TEXT"),
                    ("ai_summary","TEXT"), ("location_flag","TEXT"),
-                   ("closing_date","TEXT"), ("is_closed","INTEGER DEFAULT 0")):
+                   ("closing_date","TEXT"), ("is_closed","INTEGER DEFAULT 0"),
+                   ("research_status","TEXT"), ("research_notes","TEXT"),
+                   ("verified_scope","TEXT"), ("portal_url","TEXT"),
+                   ("contact_info","TEXT"), ("researched_at","TEXT")):
         dbx.add_column(db, "projects", _c, _t)
     try:
         db.execute("CREATE INDEX IF NOT EXISTS idx_dup_key ON projects(dup_key)")
@@ -745,6 +748,74 @@ def triage_summary():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/research-queue")
+def api_research_queue():
+    """Tenders worth researching: open, actionable, and either strong enough to
+    pursue or too thinly described to judge. This is the weekly Cowork input."""
+    db = get_db()
+    limit = int(request.args.get("limit", 40))
+    only_unresearched = request.args.get("unresearched", "1") == "1"
+    where = """WHERE p.active='true' AND (p.hidden=0 OR p.hidden IS NULL) AND p.merged_into IS NULL
+               AND (p.is_closed=0 OR p.is_closed IS NULL)
+               AND p.verdict IN ('GO','NEEDS DOC','MAYBE')
+               AND p.action_bucket IN ('ACT NOW','BD PLAY')"""
+    if only_unresearched:
+        where += " AND (p.research_status IS NULL OR p.research_status='')"
+    rows = db.execute(f"""
+        SELECT p.project_hash, p.project_name, p.customer, p.location, p.sector,
+               p.source_url, p.opportunity_type, p.stage, p.closing_date,
+               p.doability_score, p.verdict, p.confidence, p.moats, p.risk_flags,
+               p.signal_summary, p.action_bucket
+        FROM projects p {where}
+        ORDER BY
+            CASE p.verdict WHEN 'GO' THEN 0 WHEN 'NEEDS DOC' THEN 1 ELSE 2 END,
+            p.doability_score DESC
+        LIMIT {limit}
+    """).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/research", methods=["POST"])
+def api_research():
+    """Write back findings from the research run. Accepts a list of results keyed
+    by project_hash. Only fills research fields — never touches triage decisions."""
+    data = request.json or {}
+    items = data.get("results") or ([data] if data.get("project_hash") else [])
+    if not items:
+        return jsonify({"ok": False, "error": "no results"}), 400
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+    updated = unmatched = 0
+    for it in items:
+        h = it.get("project_hash")
+        if not h:
+            unmatched += 1
+            continue
+        sets, vals = [], []
+        for field, col in (("research_status","research_status"), ("research_notes","research_notes"),
+                           ("verified_scope","verified_scope"), ("portal_url","portal_url"),
+                           ("contact_info","contact_info"), ("ai_summary","ai_summary")):
+            if it.get(field):
+                sets.append(f"{col}=?"); vals.append(it[field])
+        # a verified closing date also refreshes the open/closed state
+        cd = it.get("verified_closing_date") or it.get("closing_date")
+        if cd:
+            sets.append("closing_date=?"); vals.append(cd)
+            sets.append("is_closed=?"); vals.append(1 if deadline_status(cd) == "closed" else 0)
+        if not sets:
+            unmatched += 1
+            continue
+        sets.append("researched_at=?"); vals.append(now)
+        vals.append(h)
+        res = db.execute(f"UPDATE projects SET {', '.join(sets)} WHERE project_hash=?", vals)
+        if res.rowcount:
+            updated += 1
+        else:
+            unmatched += 1
+    db.commit()
+    return jsonify({"ok": True, "updated": updated, "unmatched": unmatched})
+
+
 @app.route("/api/duplicates")
 def api_duplicates():
     """Groups of rows that are the same tender republished by several aggregators."""
@@ -934,6 +1005,8 @@ def api_projects():
             t.owner as triage_owner,
             t.next_steps as triage_next_steps,
             t.scope as triage_scope,
+            p.research_status, p.research_notes, p.verified_scope,
+            p.portal_url, p.contact_info, p.researched_at,
             (SELECT COUNT(*) FROM comments c WHERE c.project_hash = p.project_hash) as comment_count
         FROM projects p
         LEFT JOIN triage t ON t.project_hash = p.project_hash
