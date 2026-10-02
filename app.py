@@ -694,26 +694,45 @@ def get_triage(project_hash):
 
 @app.route("/api/triage/<project_hash>", methods=["POST"])
 def save_triage(project_hash):
+    """Merge-safe partial update: only keys present in the request body are
+    written; everything else keeps its stored value. A stale client can no
+    longer blank a previously saved decision by omitting (or sending empty)
+    fields it never touched."""
     db = get_db()
-    data = request.json
-    decision = data.get("decision", "")
-    reason = data.get("reason", "")
-    decided_by = data.get("decided_by", "")
-    status = data.get("status", "")
-    owner = data.get("owner", "")
-    next_steps = data.get("next_steps", "")
-    scope = data.get("scope", "")
+    data = request.json or {}
     now = datetime.utcnow().isoformat()
-    db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at, status, owner, next_steps, scope, status_updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(project_hash) DO UPDATE SET
-        decision=excluded.decision, reason=excluded.reason,
-        decided_by=excluded.decided_by, decided_at=excluded.decided_at,
-        status=excluded.status, owner=excluded.owner,
-        next_steps=excluded.next_steps, scope=excluded.scope,
-        status_updated_at=excluded.status_updated_at""",
-        (project_hash, decision, reason, decided_by, now, status, owner, next_steps, scope, now))
-    db.commit()
+    existing = db.execute("SELECT * FROM triage WHERE project_hash=?", (project_hash,)).fetchone()
+    cur = dict(existing) if existing else {}
+
+    def pick(key):
+        if key in data and data[key] is not None:
+            return data[key]
+        return cur.get(key) or ""
+
+    decision = pick("decision")
+    reason = pick("reason")
+    decided_by = pick("decided_by")
+    status = pick("status")
+    owner = pick("owner")
+    next_steps = pick("next_steps")
+    scope = pick("scope")
+    try:
+        db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at, status, owner, next_steps, scope, status_updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(project_hash) DO UPDATE SET
+            decision=excluded.decision, reason=excluded.reason,
+            decided_by=excluded.decided_by, decided_at=excluded.decided_at,
+            status=excluded.status, owner=excluded.owner,
+            next_steps=excluded.next_steps, scope=excluded.scope,
+            status_updated_at=excluded.status_updated_at""",
+            (project_hash, decision, reason, decided_by, now, status, owner, next_steps, scope, now))
+        db.commit()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": str(e)}), 500
     return jsonify({"ok": True, "decided_at": now})
 
 @app.route("/api/comments/<project_hash>", methods=["POST"])
@@ -737,6 +756,31 @@ def delete_comment(project_hash):
     db.execute("DELETE FROM comments WHERE id=? AND project_hash=?", (comment_id, project_hash))
     db.commit()
     return jsonify({"ok": True})
+
+# ─── Weekly Digest ──────────────────────────────────────────────────────
+
+import digest as digest_mod
+
+@app.route("/digest/preview")
+def digest_preview():
+    """Browser preview of exactly what Friday's email will contain."""
+    db = get_db()
+    return digest_mod.build_html(digest_mod.collect(db))
+
+@app.route("/api/digest/send", methods=["POST"])
+def digest_send():
+    """Manual trigger (the Friday cron runs send_digest.py instead).
+    Protected by DIGEST_TOKEN when set."""
+    token = os.environ.get("DIGEST_TOKEN", "")
+    if token and request.headers.get("X-Digest-Token", "") != token:
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    db = get_db()
+    try:
+        ok, detail = digest_mod.send(db)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": ok, "detail": detail}), (200 if ok else 500)
+
 
 @app.route("/api/triage/summary", methods=["GET"])
 def triage_summary():
@@ -955,6 +999,21 @@ def api_pipeline():
         d = dict(r)
         d["deadline_status"] = deadline_status(d.get("closing_date"))
         result.append(d)
+    # Attach notes/comments so the pipeline view shows the context under each tender
+    hashes = [d["project_hash"] for d in result]
+    comments_by_hash = {}
+    if hashes:
+        placeholders = ",".join("?" * len(hashes))
+        crows = db.execute(
+            f"SELECT project_hash, author, body, created_at FROM comments "
+            f"WHERE project_hash IN ({placeholders}) ORDER BY created_at ASC",
+            hashes).fetchall()
+        for c in crows:
+            cd = dict(c)
+            comments_by_hash.setdefault(cd["project_hash"], []).append(
+                {"author": cd["author"], "body": cd["body"], "created_at": cd["created_at"]})
+    for d in result:
+        d["comments"] = comments_by_hash.get(d["project_hash"], [])
     return jsonify(result)
 
 

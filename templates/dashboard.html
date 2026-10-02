@@ -81,6 +81,10 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .bar{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:5px}
 .bar i{display:block;height:100%;border-radius:3px}
 .snum{font-weight:800;font-size:15px}
+.pipe-note{color:var(--muted);font-size:11.5px;margin-top:4px;line-height:1.45;max-width:520px}
+.pipe-note b{color:var(--text);font-weight:600}
+.pipe-note .pn-date{color:var(--dim);font-size:10px;margin-left:5px}
+.pipe-note.pn-reason{color:#c9a85c;font-style:italic}
 .moat{display:inline-block;background:rgba(46,204,143,.12);color:var(--go);border:1px solid rgba(46,204,143,.3);border-radius:4px;padding:1px 5px;margin-right:3px;font-size:10.5px;font-weight:700}
 .comment-dot{display:inline-flex;align-items:center;gap:3px;background:rgba(91,157,217,.12);color:var(--mon);border-radius:10px;padding:1px 6px;font-size:10px;font-weight:600;margin-left:4px}
 
@@ -394,7 +398,7 @@ async function renderPipeline(){
   function rowHtml(p){
     const stCls=p.status?('st-'+p.status.replace(/[^A-Za-z]/g,'')):'';
     return `<tr>
-      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}<div class="cust">${esc(p.customer)}</div></td>
+      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}<div class="cust">${esc(p.customer)}</div>${p.reason?`<div class="pipe-note pn-reason">💭 ${esc(p.reason)}</div>`:''}${(p.comments||[]).map(c=>`<div class="pipe-note"><b>${esc(c.author||'')}:</b> ${esc(c.body||'')}<span class="pn-date">${(c.created_at||'').slice(0,10)}</span></div>`).join('')}</td>
       <td><span class="badge ${decBadge[p.decision]||''}">${decLabel[p.decision]||esc(p.decision)}</span></td>
       <td>${p.scope?esc(p.scope):'<span style="color:var(--dim)">—</span>'}</td>
       <td>${p.status?`<span class="status-pill ${stCls}">${esc(p.status)}</span>`:'<span style="color:var(--dim)">—</span>'}</td>
@@ -545,17 +549,17 @@ function render(){
           <div class="triage-panel" id="tp-${i}">
             <div class="triage-title">Response decision</div>
             <div class="triage-opts">
-              ${TRIAGE_OPTS.map(o=>`<button class="triage-opt ${d.triage_decision===o.key?o.cls+' '+o.cls:''}" onclick="selectTriage(${i},'${o.key}')" id="topt-${i}-${o.key}">
+              ${TRIAGE_OPTS.map(o=>`<button class="triage-opt ${d.triage_decision===o.key?o.cls+' '+o.cls:''}" onclick="selectTriage(${i},'${esc(d.project_hash)}','${o.key}')" id="topt-${i}-${o.key}">
                 <span class="triage-opt-icon">${o.icon}</span>
                 <div class="triage-opt-body"><div class="triage-opt-name">${o.name}</div><div class="triage-opt-desc">${o.desc}</div></div>
               </button>`).join('')}
             </div>
-            <textarea class="triage-reason" id="treason-${i}" placeholder="Why? Add context for Michael, Danny and Robin…">${esc(d.triage_reason||'')}</textarea>
+            <textarea class="triage-reason" id="treason-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="Why? Add context for Michael, Danny and Robin…">${esc(d.triage_reason||'')}</textarea>
             <div class="pipeline-fields">
               <div class="pf-row">
                 <div class="pf-col">
                   <label class="pf-label">Status</label>
-                  <select class="pf-input" id="tstatus-${i}">
+                  <select class="pf-input" id="tstatus-${i}" onchange="saveTriage(${i},'${esc(d.project_hash)}')">
                     <option value="">— not started —</option>
                     <option value="Screening" ${d.triage_status==='Screening'?'selected':''}>Screening</option>
                     <option value="Downloading docs" ${d.triage_status==='Downloading docs'?'selected':''}>Downloading docs</option>
@@ -569,7 +573,7 @@ function render(){
                 </div>
                 <div class="pf-col">
                   <label class="pf-label">Owner</label>
-                  <select class="pf-input" id="towner-${i}">
+                  <select class="pf-input" id="towner-${i}" onchange="saveTriage(${i},'${esc(d.project_hash)}')">
                     <option value="">— unassigned —</option>
                     ${['Kavan','Philip','Michael','Alister','Danny','Robin'].map(o=>`<option value="${o}" ${d.triage_owner===o?'selected':''}>${o}</option>`).join('')}
                   </select>
@@ -578,7 +582,7 @@ function render(){
               <div class="pf-row">
                 <div class="pf-col">
                   <label class="pf-label">Scope</label>
-                  <select class="pf-input" id="tscope-${i}">
+                  <select class="pf-input" id="tscope-${i}" onchange="saveTriage(${i},'${esc(d.project_hash)}')">
                     <option value="">—</option>
                     <option value="Full scope" ${d.triage_scope==='Full scope'?'selected':''}>Full scope</option>
                     <option value="Partial scope" ${d.triage_scope==='Partial scope'?'selected':''}>Partial scope</option>
@@ -587,7 +591,7 @@ function render(){
                 </div>
                 <div class="pf-col">
                   <label class="pf-label">Next step</label>
-                  <input class="pf-input" id="tnext-${i}" placeholder="e.g. register + download docs" value="${esc(d.triage_next_steps||'')}">
+                  <input class="pf-input" id="tnext-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="e.g. register + download docs" value="${esc(d.triage_next_steps||'')}">
                 </div>
               </div>
             </div>
@@ -612,32 +616,65 @@ function render(){
   }).join('');
 }
 
-// track selected triage per row index
-const selectedTriage={};
+// Triage selection keyed by PROJECT HASH — never by row index.
+// (Row indices shift on every filter/sort/tab switch; index-keyed state was
+// attaching decisions to the wrong tender and blanking saved decisions.)
+const triageSel={};
+const saveTimers={};
 
-function selectTriage(i, key){
-  selectedTriage[i]=key;
+function findProj(hash){
+  return DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
+}
+
+function selectTriage(i, hash, key){
+  triageSel[hash]=key;
   TRIAGE_OPTS.forEach(o=>{
     const el=document.getElementById(`topt-${i}-${o.key}`);
     if(el) el.className=`triage-opt ${key===o.key?o.cls:''}`;
   });
+  saveTriage(i, hash);   // decision clicks persist immediately
+}
+
+// Debounced auto-save for typed fields — every change persists ~600ms after you stop typing
+function queueSave(i, hash){
+  clearTimeout(saveTimers[hash]);
+  saveTimers[hash]=setTimeout(()=>saveTriage(i, hash), 600);
+}
+
+function refreshRowChrome(i, d){
+  const det=document.getElementById(`det${i}`);
+  const tr=det?det.previousElementSibling:null;
+  if(!tr) return;
+  tr.classList.remove('triaged-full','triaged-philip','triaged-pass');
+  if(d.triage_decision) tr.classList.add('triaged-'+d.triage_decision);
 }
 
 async function saveTriage(i, hash){
-  const decision=selectedTriage[i]||'';
-  const reason=document.getElementById(`treason-${i}`).value;
-  const author=document.getElementById(`cauthor-${i}`)?.value||'Kavan';
-  const status=document.getElementById(`tstatus-${i}`)?.value||'';
-  const owner=document.getElementById(`towner-${i}`)?.value||'';
-  const next_steps=document.getElementById(`tnext-${i}`)?.value||'';
-  const scope=document.getElementById(`tscope-${i}`)?.value||'';
-  await fetch(`/api/triage/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,reason,decided_by:author,status,owner,next_steps,scope})});
+  const d=findProj(hash)||{};
+  // Never send an implicit blank decision: fall back to the already-saved one.
+  const decision = triageSel[hash]!==undefined ? triageSel[hash] : (d.triage_decision||'');
+  const val=(id,fb)=>{const el=document.getElementById(`${id}-${i}`);return el!=null?el.value:(fb||'');};
+  const payload={
+    decision,
+    reason:      val('treason', d.triage_reason),
+    decided_by:  val('cauthor', '')||'Kavan',
+    status:      val('tstatus', d.triage_status),
+    owner:       val('towner',  d.triage_owner),
+    next_steps:  val('tnext',   d.triage_next_steps),
+    scope:       val('tscope',  d.triage_scope),
+  };
   const s=document.getElementById(`tsaved-${i}`);
-  s.classList.add('show');
-  setTimeout(()=>s.classList.remove('show'),2000);
-  const d=DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
-  if(d){d.triage_decision=decision;d.triage_reason=reason;d.triage_status=status;d.triage_owner=owner;d.triage_next_steps=next_steps;d.triage_scope=scope;}
-  render();
+  try{
+    const res=await fetch(`/api/triage/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    Object.assign(d,{triage_decision:payload.decision,triage_reason:payload.reason,
+      triage_status:payload.status,triage_owner:payload.owner,
+      triage_next_steps:payload.next_steps,triage_scope:payload.scope});
+    if(s){s.textContent='✓ Saved';s.style.color='';s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}
+    refreshRowChrome(i, d);  // recolour the row in place — no full re-render, open panels stay open
+  }catch(e){
+    if(s){s.textContent='✗ NOT saved — check connection, then click Save decision';s.style.color='var(--pass)';s.classList.add('show');}
+  }
 }
 
 async function loadComments(i, hash){
@@ -646,8 +683,8 @@ async function loadComments(i, hash){
   const list=document.getElementById(`clist-${i}`);
   if(!list) return;
   // also set triage selection state
-  if(data.triage&&data.triage.decision&&!selectedTriage[i]){
-    selectedTriage[i]=data.triage.decision;
+  if(data.triage&&data.triage.decision&&triageSel[hash]===undefined){
+    triageSel[hash]=data.triage.decision;
     TRIAGE_OPTS.forEach(o=>{
       const el=document.getElementById(`topt-${i}-${o.key}`);
       if(el) el.className=`triage-opt ${data.triage.decision===o.key?o.cls:''}`;
