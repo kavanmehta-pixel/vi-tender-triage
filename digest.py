@@ -44,6 +44,7 @@ def collect(db):
         FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
         WHERE p.active='true' AND (p.hidden=0 OR p.hidden IS NULL) AND p.merged_into IS NULL
           AND p.first_seen_at >= ?
+          AND (t.decision IS NULL OR t.decision != 'pass')
         ORDER BY p.doability_score DESC
     """, (week_ago,)).fetchall()
 
@@ -51,7 +52,7 @@ def collect(db):
         SELECT p.project_name, p.customer, p.closing_date, p.source_url,
                t.decision, t.reason, t.decided_by, t.owner, t.next_steps, t.scope, t.status
         FROM triage t JOIN projects p ON p.project_hash = t.project_hash
-        WHERE t.decided_at >= ? AND t.decision != ''
+        WHERE t.decided_at >= ? AND t.decision IN ('full','philip')
         ORDER BY CASE t.decision WHEN 'full' THEN 0 WHEN 'philip' THEN 1 ELSE 2 END
     """, (week_ago,)).fetchall()
 
