@@ -132,7 +132,9 @@ def build_html(data):
                      f'<b>{r["doability_score"]}</b> {_esc(r["verdict"])}</td>'
                      f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">{_esc(r.get("closing_date") or "—")}</td>'
                      f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">'
-                     f'{pill(DEC_LABEL[dec], DEC_COLOR[dec]) if dec in DEC_LABEL else "<span style=\'color:#999\'>not reviewed</span>"}</td></tr>')
+                     + (pill(DEC_LABEL[dec], DEC_COLOR[dec]) if dec in DEC_LABEL
+                        else '<span style="color:#999">not reviewed</span>')
+                     + '</td></tr>')
         new_html = (f'<table width="100%" cellpadding="0" cellspacing="0">'
                     f'<tr><td style="font-size:11px;color:#999;padding:4px 8px">TENDER</td>'
                     f'<td style="font-size:11px;color:#999;padding:4px 8px;text-align:center">SCORE</td>'
@@ -150,12 +152,14 @@ def build_html(data):
                 f'Next: {_esc(r["next_steps"])}' if r.get("next_steps") else "",
                 _esc(r["scope"]) if r.get("scope") else "",
             ] if x)
+            extra_html = f'<div style="color:#555;font-size:11px">{extra}</div>' if extra else ""
+            reason_part = " — " + _esc(r["reason"]) if r.get("reason") else ""
             rows += (f'<tr><td style="padding:7px 8px;border-bottom:1px solid #eee;font-size:13px">'
                      f'{pill(DEC_LABEL.get(r["decision"], r["decision"]), DEC_COLOR.get(r["decision"], "#777"))} '
                      f'{_link(r["project_name"], r.get("source_url"))}'
                      f'<div style="color:#777;font-size:11px">{_esc(r["customer"])}'
-                     f'{" — " + _esc(r["reason"]) if r.get("reason") else ""}</div>'
-                     f'{f"<div style=\'color:#555;font-size:11px\'>{extra}</div>" if extra else ""}</td></tr>')
+                     f'{reason_part}</div>'
+                     f'{extra_html}</td></tr>')
         decided_html = f'<table width="100%" cellpadding="0" cellspacing="0">{rows}</table>'
     else:
         decided_html = '<div style="color:#777;font-size:13px">No triage decisions recorded this week.</div>'
