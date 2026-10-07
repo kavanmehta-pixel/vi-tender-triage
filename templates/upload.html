@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VI Triage — Upload CSVs</title>
+<title>VI Triage — Upload &amp; Add</title>
 <style>
 :root{--bg:#0d1117;--panel:#151b24;--line:#26303f;--text:#e6ecf4;--muted:#8b98ab;--amber:#f5a623;--go:#2ecc8f;--pass:#e05563}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -27,6 +27,12 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .stat{display:inline-block;background:rgba(245,166,35,.12);color:var(--amber);padding:3px 10px;border-radius:5px;font-weight:700;margin:2px 4px 2px 0;font-size:12px}
 a{color:var(--amber)}
 .back{margin-top:24px;font-size:13px}
+textarea,.txt{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:var(--text);font:13px/1.5 inherit;font-family:inherit}
+textarea:focus,.txt:focus{outline:none;border-color:var(--amber)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+@media(max-width:560px){.grid2{grid-template-columns:1fr}}
+.alog{width:100%;border-collapse:collapse;font-size:12px}.alog td{padding:6px 4px;border-top:1px solid var(--line);color:var(--text)}
+.alog td.m{color:var(--muted);white-space:nowrap}
 </style>
 </head>
 <body>
@@ -62,7 +68,39 @@ a{color:var(--amber)}
   <div class="result" id="resE"></div>
 </div>
 
-<div class="back"><a href="/">← Back to dashboard</a></div>
+<div style="margin-top:36px;padding-top:24px;border-top:1px solid var(--line)">
+  <h1 style="font-size:16px">Paste an alert <span>— tender emails that reached your inbox</span></h1>
+  <div class="sub">Until every portal alert goes to tenders@ automatically, paste any alert email here (the whole thing — subject and body). Each tender in it is scored, tagged <b>✉ alert</b>, and matched to the weekly scrape so it never shows twice.</div>
+  <div class="field"><label>Alert email <em>copy the full email and paste</em></label>
+    <textarea id="pasteText" rows="9" placeholder="Paste the alert email here…"></textarea></div>
+  <button id="btnP" onclick="pasteAlert()">Add from alert</button>
+  <div class="result" id="resP"></div>
+</div>
+
+<div style="margin-top:36px;padding-top:24px;border-top:1px solid var(--line)">
+  <h1 style="font-size:16px">Add a tender manually <span>— SEN articles, phone tips, anything else</span></h1>
+  <div class="sub">Tagged <b>✍ manual</b>. Use this when there is no alert email to paste.</div>
+  <div class="field"><label>Title <em>required</em></label><input class="txt" id="mTitle" placeholder="e.g. Laing O'Rourke — site security partners (SA)"></div>
+  <div class="grid2">
+    <div class="field"><label>Buyer</label><input class="txt" id="mBuyer"></div>
+    <div class="field"><label>Closing date</label><input class="txt" id="mClose" type="date"></div>
+    <div class="field"><label>Link</label><input class="txt" id="mUrl" placeholder="https://"></div>
+    <div class="field"><label>Portal reference</label><input class="txt" id="mRef" placeholder="e.g. VP 513223"></div>
+    <div class="field"><label>Location</label><input class="txt" id="mLoc" placeholder="e.g. NSW-AU"></div>
+    <div class="field"><label>Added by</label><input class="txt" id="mBy" placeholder="your name"></div>
+  </div>
+  <div class="field"><label>Description <em>what the scope looks like — the scorer reads this</em></label>
+    <textarea id="mDesc" rows="4"></textarea></div>
+  <button id="btnM" onclick="addManual()">Add tender</button>
+  <div class="result" id="resM"></div>
+</div>
+
+<div style="margin-top:36px;padding-top:24px;border-top:1px solid var(--line)">
+  <h1 style="font-size:16px">Recent alert emails</h1>
+  <div class="sub" id="alertLog">Loading…</div>
+</div>
+
+<div class="back"><a href="/">← Back to dashboard</a> · <a href="/report">Outcomes report</a></div>
 </div>
 
 <script>
@@ -125,6 +163,51 @@ async function uploadEnriched(){
   }
   btn.disabled = false; btn.textContent = 'Attach Summaries';
 }
+
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function showIngest(res, d){
+  res.className='result ok'; res.style.display='block';
+  if(d.duplicate_email){ res.innerHTML='<h3>Already added</h3>This alert was ingested before — nothing changed.'; return; }
+  const list=(d.tenders||[]).map(x=>`<li>${x.status==='new'?'🆕':'↺'} ${esc(x.title)}${x.portal_ref?' <span style="color:var(--muted)">· '+esc(x.portal_ref)+'</span>':''}${x.closing_date?' <span style="color:var(--muted)">· closes '+esc(x.closing_date)+'</span>':''}</li>`).join('');
+  res.innerHTML=`<h3>${d.new||0} new · ${d.matched||0} already known</h3><ul style="margin:6px 0 0 18px">${list}</ul><br><a href="/">View dashboard →</a>`;
+}
+async function pasteAlert(){
+  const btn=document.getElementById('btnP'), res=document.getElementById('resP');
+  const text=document.getElementById('pasteText').value.trim();
+  if(!text){alert('Paste an alert email first');return;}
+  btn.disabled=true; btn.textContent='Reading…';
+  try{
+    const r=await fetch('/api/ingest/paste',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    const d=await r.json(); if(!r.ok||!d.ok) throw new Error(d.error||'Failed');
+    showIngest(res,d); document.getElementById('pasteText').value=''; loadAlerts();
+  }catch(e){res.className='result err';res.style.display='block';res.innerHTML='<h3>Error</h3>'+esc(e.message);}
+  btn.disabled=false; btn.textContent='Add from alert';
+}
+async function addManual(){
+  const btn=document.getElementById('btnM'), res=document.getElementById('resM');
+  const v=id=>document.getElementById(id).value.trim();
+  if(!v('mTitle')){alert('Title is required');return;}
+  btn.disabled=true;
+  try{
+    const r=await fetch('/api/ingest/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      title:v('mTitle'),buyer:v('mBuyer'),closing_date:v('mClose'),url:v('mUrl'),portal_ref:v('mRef'),
+      location:v('mLoc'),added_by:v('mBy'),description:v('mDesc')})});
+    const d=await r.json(); if(!r.ok||!d.ok) throw new Error(d.error||'Failed');
+    res.className='result ok';res.style.display='block';
+    res.innerHTML=d.status==='new'?'<h3>Added</h3><a href="/">View dashboard →</a>':'<h3>Already in the database</h3>Matched an existing tender — marked as also reported manually.';
+    ['mTitle','mBuyer','mClose','mUrl','mRef','mDesc'].forEach(id=>document.getElementById(id).value='');
+  }catch(e){res.className='result err';res.style.display='block';res.innerHTML='<h3>Error</h3>'+esc(e.message);}
+  btn.disabled=false;
+}
+async function loadAlerts(){
+  const el=document.getElementById('alertLog');
+  try{
+    const rows=await fetch('/api/alerts').then(r=>r.json());
+    if(!rows.length){el.textContent='None yet.';return;}
+    el.innerHTML='<table class="alog">'+rows.slice(0,12).map(a=>`<tr><td class="m">${esc((a.received_at||'').slice(0,16).replace('T',' '))}</td><td class="m">${esc(a.portal)}</td><td>${esc(a.subject||'(no subject)')}</td><td class="m">${a.items_new} new / ${a.items_parsed}</td></tr>`).join('')+'</table>';
+  }catch(e){el.textContent='Could not load.';}
+}
+loadAlerts();
 </script>
 </body>
 </html>

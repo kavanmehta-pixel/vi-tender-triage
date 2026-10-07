@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tender Outcomes Report</title>
+<style>
+:root{--bg:#0d1117;--panel:#151b24;--panel2:#1b2330;--line:#26303f;--text:#e6ecf4;--muted:#8b98ab;--dim:#5c6a7e;
+  --amber:#f5a623;--go:#2ecc8f;--pass:#e05563;--philip:#a78bfa;--mon:#5b9dd9}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 80px}
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:22px}
+h1{font-size:21px;font-weight:700} h1 span{color:var(--amber)}
+.sub{color:var(--muted);font-size:12.5px;margin-top:5px;line-height:1.5;max-width:760px}
+header a{color:var(--amber);font-weight:600;text-decoration:none;font-size:13px}
+h2{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin:30px 0 10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{background:var(--panel2);color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;text-align:left;padding:9px 12px;font-weight:600;white-space:nowrap}
+td{padding:10px 12px;border-top:1px solid var(--line);font-size:13px;vertical-align:top}
+td.n{font-variant-numeric:tabular-nums;text-align:right} th.n{text-align:right}
+.dec{font-weight:700}.dec-full{color:var(--go)}.dec-philip{color:var(--philip)}.dec-pass{color:var(--pass)}
+.won{color:var(--go);font-weight:700}.lost{color:var(--pass);font-weight:700}
+.muted{color:var(--dim)} .cust{color:var(--muted);font-size:12px}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700}
+.p-alert{background:rgba(91,157,217,.15);color:var(--mon)}.p-scrape{background:rgba(139,152,171,.14);color:var(--muted)}.p-manual{background:rgba(245,166,35,.14);color:var(--amber)}
+.gap{color:var(--amber);font-weight:700}
+.note{color:var(--dim);font-size:12px;margin-top:8px;line-height:1.55}
+.empty{padding:18px 12px;color:var(--dim);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div>
+    <h1>Tender <span>outcomes &amp; coverage</span></h1>
+    <div class="sub">Did the triage call turn into a submission, and did the submission win? Plus where each week's tenders came from — anything that only reached us by email alert is a gap in the weekly scrape.</div>
+  </div>
+  <a href="/">← Dashboard</a>
+</header>
+
+<h2>Decisions vs outcomes</h2>
+<div class="card"><table>
+  <tr><th>Decision</th>{% for c in r.columns %}<th class="n">{{ c }}</th>{% endfor %}<th class="n">Total</th><th class="n">Win rate</th><th class="n">Won value</th></tr>
+  {% for key, label in [('full','Full tender'),('philip','Philip reach-out'),('pass','Pass')] %}
+  {% set m = r.matrix[key] %}
+  <tr>
+    <td class="dec dec-{{ key }}">{{ label }}</td>
+    {% for c in r.columns %}<td class="n">{{ m[c] or '·' }}</td>{% endfor %}
+    <td class="n">{{ m.total }}</td>
+    <td class="n">{% if m.win_rate is not none %}{{ m.win_rate }}%{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="n">{% if m.won_value %}${{ '{:,}'.format(m.won_value) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+<div class="note">Win rate counts only tenders with a result (Won + Lost). A Won/Lost against a Pass means the call was overridden later — worth a look.</div>
+
+<h2>Results</h2>
+<div class="card">
+{% if r.outcomes %}<table>
+  <tr><th>Tender</th><th>Result</th><th class="n">Value</th><th>Reason</th><th>Owner</th><th>Decided</th><th>Result date</th></tr>
+  {% for o in r.outcomes %}
+  <tr>
+    <td>{{ o.project_name }}<div class="cust">{{ o.customer or '' }}</div></td>
+    <td class="{{ 'won' if o.status=='Won' else 'lost' }}">{{ o.status }}</td>
+    <td class="n">{% if o.value %}${{ '{:,}'.format(o.value|int) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{{ o.outcome_reason or '' }}</td>
+    <td>{{ o.owner or '' }}</td>
+    <td class="dec dec-{{ o.decision }}">{{ {'full':'Full','philip':'Philip','pass':'Pass'}.get(o.decision, o.decision) }}</td>
+    <td class="muted">{{ (o.outcome_at or '')[:10] }}</td>
+  </tr>{% endfor %}
+</table>{% else %}<div class="empty">No results recorded yet. Set a tender's status to Won or Lost (with value and reason) in its triage panel.</div>{% endif %}
+</div>
+
+<h2>Submitted, awaiting result</h2>
+<div class="card">
+{% if r.awaiting %}<table>
+  <tr><th>Tender</th><th class="n">Value</th><th>Owner</th><th>Submitted</th></tr>
+  {% for o in r.awaiting %}
+  <tr><td>{{ o.project_name }}<div class="cust">{{ o.customer or '' }}</div></td>
+    <td class="n">{% if o.value %}${{ '{:,}'.format(o.value|int) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{{ o.owner or '' }}</td><td class="muted">{{ (o.submitted_at or '')[:10] }}</td></tr>
+  {% endfor %}
+</table>{% else %}<div class="empty">Nothing submitted and waiting.</div>{% endif %}
+</div>
+
+<h2>Coverage by week — where new tenders came from</h2>
+<div class="card">
+{% if r.coverage %}<table>
+  <tr><th>Week first seen</th><th class="n">Scrape</th><th class="n">Email alert</th><th class="n">Manual</th><th class="n">Seen by both</th><th class="n">Missed by scrape</th></tr>
+  {% for w in r.coverage %}
+  <tr><td>{{ w.week }}</td><td class="n">{{ w.scrape }}</td><td class="n">{{ w.alert }}</td><td class="n">{{ w.manual }}</td>
+    <td class="n">{{ w.both }}</td><td class="n {{ 'gap' if w.alert_only else '' }}">{{ w.alert_only }}</td></tr>
+  {% endfor %}
+</table>{% else %}<div class="empty">No tenders in the last 8 weeks.</div>{% endif %}
+</div>
+<div class="note">"Missed by scrape" = reached us only by alert or manual entry and has not appeared in a weekly CSV since. Each one is a tender John's pipeline should be finding.
+{% if r.scrape_gaps_by_portal %} By portal: {% for k, n in r.scrape_gaps_by_portal %}<b>{{ portals.get(k, k) }}</b> {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}.{% endif %}</div>
+
+<h2>Recent alert emails</h2>
+<div class="card">
+{% if alerts %}<table>
+  <tr><th>Received</th><th>Portal</th><th>Subject</th><th class="n">Tenders</th><th class="n">New</th><th class="n">Already known</th></tr>
+  {% for a in alerts %}
+  <tr><td class="muted">{{ (a.received_at or '')[:16]|replace('T',' ') }}</td>
+    <td>{{ portals.get(a.portal, a.portal) }}{% if a.fallback %} <span class="pill p-manual" title="Format not recognised — built from the subject line">check</span>{% endif %}</td>
+    <td>{{ a.subject }}</td><td class="n">{{ a.items_parsed }}</td><td class="n">{{ a.items_new }}</td><td class="n">{{ a.items_matched }}</td></tr>
+  {% endfor %}
+</table>{% else %}<div class="empty">No alert emails received yet. Once tenders@ forwarding is live they appear here within the hour.</div>{% endif %}
+</div>
+</div>
+</body>
+</html>

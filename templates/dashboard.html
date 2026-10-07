@@ -26,6 +26,9 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI'
 header{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:18px}
 h1{font-size:21px;font-weight:700}h1 span{color:var(--amber)}
 .sub{color:var(--muted);font-size:12.5px;margin-top:5px;max-width:860px;line-height:1.5}
+.src-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:10.5px;font-weight:700;vertical-align:middle}
+.src-alert{background:rgba(91,157,217,.15);color:var(--mon)}.src-manual{background:rgba(245,166,35,.14);color:var(--amber)}
+.pipe-val{font-variant-numeric:tabular-nums;white-space:nowrap}
 .stamp{color:var(--dim);font-size:11.5px;text-align:right;line-height:1.6}
 .stamp a{color:var(--amber);text-decoration:none;font-weight:600}
 .stamp a:hover{text-decoration:underline}
@@ -237,7 +240,7 @@ tr.row:hover .row-actions{opacity:1}
     <h1>VI Tender <span>Doability Triage</span></h1>
     <div class="sub">Moat-scored: <b style="color:var(--text)">M1</b> off-grid/remote · <b style="color:var(--text)">M2</b> solar · <b style="color:var(--text)">M3</b> monitored outcome · <b style="color:var(--text)">M4</b> AI analytics · <b style="color:var(--text)">M5</b> temp/rapid deploy · <b style="color:var(--text)">M6</b> traffic/transport analytics. Zero moats = commodity — capped, never GO.</div>
   </div>
-  <div class="stamp" id="stamp">Loading…<br><a href="/upload">Upload CSVs</a></div>
+  <div class="stamp" id="stamp">Loading…<br><a href="/upload">Upload / add tender</a> · <a href="/report">Outcomes report</a></div>
 </header>
 
 <div class="alert-banner" id="alertBanner" role="alert"></div>
@@ -258,6 +261,7 @@ tr.row:hover .row-actions{opacity:1}
   <select id="fAction"><option value="">All buckets</option><option value="ACT NOW (open)">Act now</option><option value="MONITOR (pre-market)">Monitor</option><option value="BD PLAY (sell direct)">BD play</option></select>
   <select id="fDeadline"><option value="">All deadlines</option><option value="urgent">🔴 Closes ≤7 days</option><option value="soon">🟠 Closes ≤30 days</option><option value="future">Future</option><option value="closed">Closed</option></select>
   <select id="fResearch"><option value="">All research</option><option value="done">🔍 Researched</option><option value="confirmed">✓ Confirmed fit</option><option value="not_relevant">✗ Not relevant</option><option value="none">Not researched</option></select>
+  <select id="fSource"><option value="">All sources</option><option value="alert">✉ Email alert</option><option value="manual">✍ Added manually</option><option value="scrape">Weekly scrape</option><option value="gap">Missed by scrape</option></select>
   <select id="fTriage"><option value="">All triage</option><option value="pass">⛔ Pass</option><option value="philip">💬 Philip reach-out</option><option value="full">✅ Full tender</option><option value="none">Not yet triaged</option></select>
   <select id="fSector"><option value="">All sectors</option></select>
   <select id="fLoc"><option value="">All locations</option></select>
@@ -293,7 +297,7 @@ tr.row:hover .row-actions{opacity:1}
 
 <script>
 let DATA=[], DATA_NEW=[], view='all', sortK=null, sortAsc=false;
-let filt={q:'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:'',triage:'',research:''};
+let filt={q:'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:'',triage:'',research:'',source:''};
 let showClosed=false;
 const rank={GO:0,'NEEDS DOC':1,MAYBE:2,PASS:3};
 const TRIAGE_OPTS=[
@@ -344,7 +348,7 @@ async function load(){
   DATA=all; DATA_NEW=nw;
   document.getElementById('newBadge').textContent=nw.length;
   const lr=stats.latest_run;
-  document.getElementById('stamp').innerHTML=(lr?`Last run: ${lr.created_at.slice(0,10)} · ${lr.new_projects} new · ${lr.total_projects} total`:'No runs yet')+'<br><a href="/upload">Upload CSVs</a>';
+  document.getElementById('stamp').innerHTML=(lr?`Last run: ${lr.created_at.slice(0,10)} · ${lr.new_projects} new · ${lr.total_projects} total`:'No runs yet')+'<br><a href="/upload">Upload / add tender</a> · <a href="/report">Outcomes report</a>';
   const secs=[...new Set(DATA.map(d=>d.sector).filter(Boolean))].sort();
   const locs=[...new Set(DATA.map(d=>d.location).filter(Boolean))].sort();
   secs.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;document.getElementById('fSector').append(o)});
@@ -398,10 +402,11 @@ async function renderPipeline(){
   function rowHtml(p){
     const stCls=p.status?('st-'+p.status.replace(/[^A-Za-z]/g,'')):'';
     return `<tr>
-      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}<div class="cust">${esc(p.customer)}</div>${p.reason?`<div class="pipe-note pn-reason">💭 ${esc(p.reason)}</div>`:''}${(p.comments||[]).map(c=>`<div class="pipe-note"><b>${esc(c.author||'')}:</b> ${esc(c.body||'')}<span class="pn-date">${(c.created_at||'').slice(0,10)}</span></div>`).join('')}</td>
+      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}<div class="cust">${esc(p.customer)}${sourceBadge(p)}</div>${p.reason?`<div class="pipe-note pn-reason">💭 ${esc(p.reason)}</div>`:''}${(p.comments||[]).map(c=>`<div class="pipe-note"><b>${esc(c.author||'')}:</b> ${esc(c.body||'')}<span class="pn-date">${(c.created_at||'').slice(0,10)}</span></div>`).join('')}</td>
       <td><span class="badge ${decBadge[p.decision]||''}">${decLabel[p.decision]||esc(p.decision)}</span></td>
       <td>${p.scope?esc(p.scope):'<span style="color:var(--dim)">—</span>'}</td>
-      <td>${p.status?`<span class="status-pill ${stCls}">${esc(p.status)}</span>`:'<span style="color:var(--dim)">—</span>'}</td>
+      <td>${p.status?`<span class="status-pill ${stCls}">${esc(p.status)}</span>`:'<span style="color:var(--dim)">—</span>'}${p.outcome_reason&&(p.status==='Won'||p.status==='Lost')?`<div class="pipe-note">${esc(p.outcome_reason)}</div>`:''}</td>
+      <td class="pipe-val">${p.value?'$'+Number(p.value).toLocaleString('en-AU'):'<span style="color:var(--dim)">—</span>'}</td>
       <td>${p.owner?`<span class="owner-tag">${esc(p.owner)}</span>`:'<span style="color:var(--dim)">unassigned</span>'}</td>
       <td>${p.next_steps?esc(p.next_steps):'<span style="color:var(--dim)">—</span>'}</td>
       <td>${p.closing_date?(p.deadline_status==='urgent'?`<span class="dl-urgent">🔴 ${p.closing_date}</span>`:p.deadline_status==='soon'?`<span class="dl-soon">🟠 ${p.closing_date}</span>`:p.deadline_status==='closed'?`<span class="dl-closed">${p.closing_date}</span>`:p.closing_date):'—'}</td>
@@ -411,10 +416,10 @@ async function renderPipeline(){
   wrap.innerHTML=`
     <div style="margin-bottom:10px;color:var(--muted);font-size:13px">${active.length} active in pipeline · ${passed.length} passed. This is the weekly status view for Michael, Danny, Robin & John.</div>
     <table class="pipe-table"><thead><tr>
-      <th>Tender / Customer</th><th>Decision</th><th>Scope</th><th>Status</th><th>Owner</th><th>Next step</th><th>Deadline</th><th>Loc</th>
+      <th>Tender / Customer</th><th>Decision</th><th>Scope</th><th>Status</th><th>Value</th><th>Owner</th><th>Next step</th><th>Deadline</th><th>Loc</th>
     </tr></thead><tbody>
       ${active.map(rowHtml).join('')}
-      ${passed.length?`<tr><td colspan="8" style="padding-top:18px;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Passed</td></tr>`:''}
+      ${passed.length?`<tr><td colspan="9" style="padding-top:18px;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Passed</td></tr>`:''}
       ${passed.map(rowHtml).join('')}
     </tbody></table>`;
 }
@@ -450,6 +455,13 @@ function dlBadge(d){
   if(ds==='soon')   return `<span class="dl-soon">🟠 ${cd}</span>`;
   return `<span class="dl-future">${cd}</span>`;
 }
+function sourceBadge(d){
+  const via=(d.seen_via||d.source||'').split(',');
+  const ref=d.portal_ref?` · ${esc(d.portal_ref)}`:'';
+  if(via.includes('alert')) return `<span class="src-badge src-alert" title="Received by portal email alert${via.includes('scrape')?' and also found by the weekly scrape':' — not yet found by the weekly scrape'}">✉ alert${ref}</span>`;
+  if(via.includes('manual')) return `<span class="src-badge src-manual" title="Added manually">✍ manual</span>`;
+  return '';
+}
 function triageBadge(d){
   if(!d.triage_decision) return '';
   const o=TRIAGE_OPTS.find(x=>x.key===d.triage_decision);
@@ -470,6 +482,11 @@ function rows(){
       if(filt.research==='none'&&rs) return false;
       if(filt.research==='done'&&!rs) return false;
       if(['confirmed','not_relevant'].includes(filt.research)&&rs!==filt.research) return false;
+    }
+    if(filt.source){
+      const via=(d.seen_via||d.source||'scrape').split(',');
+      if(filt.source==='gap'){ if(via.includes('scrape')||!(via.includes('alert')||via.includes('manual'))) return false; }
+      else if(!via.includes(filt.source)) return false;
     }
     if(filt.triage){
       if(filt.triage==='none'&&d.triage_decision)return false;
@@ -498,7 +515,7 @@ function render(){
     const triCls=d.triage_decision?`triaged-${d.triage_decision}`:'';
     const commentBadge=d.comment_count>0?`<span class="comment-dot">💬${d.comment_count}</span>`:'';
     return `<tr class="row ${isNew?'is-new':''} ${d.is_closed?'is-closed':''} ${triCls}" onclick="tog(this,'${esc(d.project_hash)}',${i})">
-      <td class="pname">${isNew?'<span class="new-dot"></span>':''}${d.source_url?`<a href="${esc(d.source_url)}" target="_blank" onclick="event.stopPropagation()">${esc(d.project_name)}</a>`:esc(d.project_name)}${triageBadge(d)}${commentBadge}${d.research_status?`<span class="res-badge res-${d.research_status}" title="Researched ${(d.researched_at||'').slice(0,10)}">${d.research_status==='not_relevant'?'✗ researched':'✓ researched'}</span>`:''}
+      <td class="pname">${isNew?'<span class="new-dot"></span>':''}${d.source_url?`<a href="${esc(d.source_url)}" target="_blank" onclick="event.stopPropagation()">${esc(d.project_name)}</a>`:esc(d.project_name)}${triageBadge(d)}${sourceBadge(d)}${commentBadge}${d.research_status?`<span class="res-badge res-${d.research_status}" title="Researched ${(d.researched_at||'').slice(0,10)}">${d.research_status==='not_relevant'?'✗ researched':'✓ researched'}</span>`:''}
         <div class="cust">${esc(d.customer)}${d.location_flag?` <span style="color:var(--urgent);font-size:10px" title="${esc(d.location_flag)}">⚠️ remote</span>`:''}</div></td>
       <td class="scorecell"><span class="snum" style="color:${scoreColor(d.doability_score)}">${d.doability_score}</span>
         <div class="bar"><i style="width:${d.doability_score}%;background:${scoreColor(d.doability_score)}"></i></div></td>
@@ -594,6 +611,16 @@ function render(){
                   <input class="pf-input" id="tnext-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="e.g. register + download docs" value="${esc(d.triage_next_steps||'')}">
                 </div>
               </div>
+              <div class="pf-row">
+                <div class="pf-col">
+                  <label class="pf-label">Value (AUD)</label>
+                  <input class="pf-input" id="tvalue-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="e.g. 250k or 1.2m" value="${d.triage_value?Number(d.triage_value).toLocaleString('en-AU'):''}">
+                </div>
+                <div class="pf-col">
+                  <label class="pf-label">Outcome reason <span style="color:var(--dim);text-transform:none;letter-spacing:0">(Won / Lost)</span></label>
+                  <input class="pf-input" id="toutcome-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="e.g. lost on price to incumbent" value="${esc(d.triage_outcome_reason||'')}">
+                </div>
+              </div>
             </div>
             <div style="display:flex;align-items:center">
               <button class="triage-save" onclick="saveTriage(${i},'${esc(d.project_hash)}')">Save decision</button>
@@ -662,14 +689,18 @@ async function saveTriage(i, hash){
     owner:       val('towner',  d.triage_owner),
     next_steps:  val('tnext',   d.triage_next_steps),
     scope:       val('tscope',  d.triage_scope),
+    value:       val('tvalue',  d.triage_value),
+    outcome_reason: val('toutcome', d.triage_outcome_reason),
   };
   const s=document.getElementById(`tsaved-${i}`);
   try{
     const res=await fetch(`/api/triage/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!res.ok) throw new Error('HTTP '+res.status);
+    const saved=await res.json().catch(()=>({}));
     Object.assign(d,{triage_decision:payload.decision,triage_reason:payload.reason,
       triage_status:payload.status,triage_owner:payload.owner,
-      triage_next_steps:payload.next_steps,triage_scope:payload.scope});
+      triage_next_steps:payload.next_steps,triage_scope:payload.scope,
+      triage_value:(saved.value!==undefined?saved.value:d.triage_value),triage_outcome_reason:payload.outcome_reason});
     if(s){s.textContent='✓ Saved';s.style.color='';s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}
     refreshRowChrome(i, d);  // recolour the row in place — no full re-render, open panels stay open
   }catch(e){
@@ -886,6 +917,7 @@ document.getElementById('fAction').onchange=e=>{filt.action=e.target.value;rende
 document.getElementById('fDeadline').onchange=e=>{filt.deadline=e.target.value;render();};
 document.getElementById('fTriage').onchange=e=>{filt.triage=e.target.value;render();};
 document.getElementById('fResearch').onchange=e=>{filt.research=e.target.value;render();};
+document.getElementById('fSource').onchange=e=>{filt.source=e.target.value;render();};
 document.getElementById('fSector').onchange=e=>{filt.sector=e.target.value;render();};
 document.getElementById('fLoc').onchange=e=>{filt.loc=e.target.value;render();};
 document.querySelectorAll('th').forEach(th=>th.onclick=()=>{

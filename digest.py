@@ -40,7 +40,8 @@ def collect(db):
 
     new_this_week = db.execute("""
         SELECT p.project_name, p.customer, p.location, p.doability_score, p.verdict,
-               p.closing_date, p.source_url, t.decision AS triage_decision
+               p.closing_date, p.source_url, t.decision AS triage_decision,
+               p.seen_via, p.portal_ref
         FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
         WHERE p.active='true' AND (p.hidden=0 OR p.hidden IS NULL) AND p.merged_into IS NULL
           AND p.first_seen_at >= ?
@@ -102,6 +103,16 @@ def _link(name, url):
     return name
 
 
+def _via_tag(r):
+    """'· via email alert' when a tender reached us by alert/manual entry, not the scrape."""
+    via = (r.get("seen_via") or "").split(",")
+    if "alert" in via:
+        return " · via email alert" + (f" ({_esc(r['portal_ref'])})" if r.get("portal_ref") else "")
+    if "manual" in via:
+        return " · added manually"
+    return ""
+
+
 def build_html(data):
     """Email-safe HTML (tables + inline styles, light background)."""
     today = datetime.utcnow() + timedelta(hours=10)  # AEST-ish for the header date
@@ -128,7 +139,8 @@ def build_html(data):
             dec = r.get("triage_decision")
             rows += (f'<tr><td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px">'
                      f'{_link(r["project_name"], r.get("source_url"))}'
-                     f'<div style="color:#777;font-size:11px">{_esc(r["customer"])} · {_esc(r.get("location",""))}</div></td>'
+                     f'<div style="color:#777;font-size:11px">{_esc(r["customer"])} · {_esc(r.get("location",""))}'
+                     f'{_via_tag(r)}</div></td>'
                      f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:center">'
                      f'<b>{r["doability_score"]}</b> {_esc(r["verdict"])}</td>'
                      f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">{_esc(r.get("closing_date") or "—")}</td>'

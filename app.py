@@ -2,6 +2,7 @@ import os, json, csv, io, re, sqlite3, hashlib, secrets
 from datetime import datetime, timedelta, date
 from flask import Flask, request, jsonify, render_template, g
 import db as dbx
+import email_ingest
 
 app = Flask(__name__)
 DB_PATH = dbx.location()
@@ -148,8 +149,47 @@ def init_db():
     for col, coltype in [("status","TEXT"),("owner","TEXT"),("next_steps","TEXT"),
                          ("scope","TEXT"),("status_updated_at","TEXT")]:
         dbx.add_column(db, "triage", col, coltype)
+    migrate_sources_and_outcomes(db)
     db.commit()
     db.close()
+
+
+def migrate_sources_and_outcomes(db):
+    """Oct 2026: source tagging, email-alert ingest and outcome tracking.
+    Mirrors migrations/2026-10-08_sources_alerts_outcomes.sql; both are idempotent."""
+    # where a tender came from: scrape (John's weekly CSV) / alert (portal email) / manual
+    for col, coltype in [("source", "TEXT"), ("seen_via", "TEXT"), ("portal", "TEXT"),
+                         ("portal_ref", "TEXT"), ("url_norm", "TEXT"), ("alert_message_id", "TEXT")]:
+        dbx.add_column(db, "projects", col, coltype)
+    # outcome tracking: Submitted -> Awaiting outcome -> Won / Lost, with value and reason
+    for col, coltype in [("value", "TEXT"), ("outcome_reason", "TEXT"),
+                         ("submitted_at", "TEXT"), ("outcome_at", "TEXT")]:
+        dbx.add_column(db, "triage", col, coltype)
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS alert_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT UNIQUE,
+        received_at TEXT,
+        sender TEXT,
+        subject TEXT,
+        portal TEXT,
+        via TEXT,
+        items_parsed INTEGER,
+        items_new INTEGER,
+        items_matched INTEGER,
+        fallback INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_portal_ref ON projects(portal, portal_ref);
+    CREATE INDEX IF NOT EXISTS idx_projects_url_norm ON projects(url_norm);
+    CREATE INDEX IF NOT EXISTS idx_projects_source ON projects(source);
+    """)
+    try:
+        # Everything that predates this change came from John's scrape.
+        db.execute("UPDATE projects SET source='scrape' WHERE source IS NULL OR source=''")
+        db.execute("UPDATE projects SET seen_via='scrape' WHERE seen_via IS NULL OR seen_via=''")
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 # ─── Date Parser ────────────────────────────────────────────────────────
@@ -301,6 +341,17 @@ ARCHETYPES = {
         r"laydown|compound|redevelopment|main works|d&c|design and construct",
         {"M5": 1.0, "M1": 0.45}),
     "port_marine": (r"\bport\b|wharf|berth|marine (infrastructure|precinct)|terminal", {"M1": 0.55, "M5": 0.6}),
+    # Traffic / transport operations: VI's M6 (traffic counts, ANPR, speed and
+    # hooning detection, journey-time) plus AI analytics. Added Oct 2026 so
+    # road-safety and transport-authority work stops falling through as PASS.
+    "traffic_transport": (
+        r"traffic (management|signal|control|count|monitor|data|survey|camera|flow|incident)|road safety|"
+        r"speed (camera|monitor|enforcement|detection|limit)|hoon(ing)?|red[- ]light|intersection|congestion|"
+        r"pedestrian|cyclist|school zone|parking (enforcement|monitor|sensor|management)|car ?park|"
+        r"intelligent transport|\bits (project|system|program)|vehicle (count|classification|detection|movement)|"
+        r"journey time|origin[- ]destination|level crossing|road user|traffic|transport for nsw|\btfnsw\b|"
+        r"transport and main roads|\btmr\b|vicroads|main roads|road network|bus (stop|interchange|depot)",
+        {"M6": 1.0, "M4": 0.6}),
     "vertical_building": (
         r"\blibrary\b|community (centre|center|precinct|hub)|office (building|fit)|school building|classroom|"
         r"\bhospital\b|health (centre|facility)|aged care|childcare|museum|gallery|theatre|stadium roof|"
@@ -338,8 +389,9 @@ TEXT_MOATS = {
           r"dumping detection|fire detection|smoke detection|thermal|computer vision|object detection",
     "M5": r"temporary|relocatable|redeployable|short[- ]term|rapid[- ]deploy|mobile (cctv|camera|surveillance)|"
           r"trailer|construction (site|phase|period)|site security|hire\b|pop[- ]up",
-    "M6": r"traffic (count|monitor|management|flow|survey)|vehicle (count|detection|movement)|weigh[- ]in[- ]motion|"
-          r"axle count|loadsure|haulage|freight movement|pedestrian count",
+    "M6": r"traffic|vehicle (count|detection|movement|classification)|weigh[- ]in[- ]motion|road safety|"
+          r"axle count|loadsure|haulage|freight movement|pedestrian count|speed (camera|monitor|detection)|"
+          r"hoon(ing)?|journey time|level crossing|intersection|congestion|school zone",
 }
 MOAT_NAMES = {
     "M1": "off-grid/remote", "M2": "solar fleet", "M3": "monitored outcome",
@@ -496,10 +548,25 @@ def score_project(row):
     else:
         verdict = "PASS"
 
+    # A terse listing (an alert title, a one-line portal entry) tells us almost
+    # nothing about scope, so we cannot call it commodity either way.
+    terse = len(text) < 260
+    if terse and confidence != "HIGH":
+        confidence = "LOW"
+
     commodity = "yes" if (moat_count == 0 and confidence != "LOW" and not hard_hit) else "no"
     if commodity == "yes":
         fit = min(fit, 44)
         if verdict == "GO": verdict = "MAYBE"
+
+    # Include ambiguity first (Alex, Oct 2026): if nothing disqualifies it and we
+    # can see either a VI angle or a security scope, but cannot see enough to be
+    # sure, it comes to the Friday meeting as a MAYBE rather than dying as a PASS.
+    # A false MAYBE costs one line of human review; a false PASS costs a tender.
+    if (verdict == "PASS" and not hard_hit and not is_building and commodity != "yes"
+            and confidence != "HIGH" and (moat_count >= 1 or scope_stated)):
+        verdict = "MAYBE"
+        flags.append("ambiguous — scored in for review")
 
     return {
         "doability_score": fit,
@@ -535,6 +602,164 @@ def make_hash(row):
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+# ─── Source tagging + cross-source dedupe ──────────────────────────────
+# Every tender carries `source` (where we FIRST saw it) and `seen_via` (every
+# channel that has reported it, comma-separated). Coverage = how many tenders
+# only ever arrived by alert, i.e. the scrape missed them.
+
+SOURCES = ("scrape", "alert", "manual")
+
+
+def _add_via(seen_via, src):
+    parts = [p for p in (seen_via or "").split(",") if p]
+    if src not in parts:
+        parts.append(src)
+    return ",".join(p for p in SOURCES if p in parts) + "".join(
+        "," + p for p in parts if p not in SOURCES)
+
+
+def portal_fields(url, text=""):
+    """portal / portal_ref / url_norm for any row, scrape or alert, so the two
+    can be matched on the portal's own tender ID."""
+    p = email_ingest.portal_for_url(url or "")
+    ref = email_ingest.ref_from(text or "", url or "", p) if p else ""
+    return (p or {}).get("key", ""), ref, email_ingest.normalise_url(url or "")
+
+
+def find_existing(db, portal, portal_ref, url_norm, dk, exclude_via=None):
+    """Match a tender already in the DB by portal reference, then URL, then the
+    normalised name+buyer key. exclude_via skips rows already reported by that
+    channel (scrape rows are never auto-merged with each other - that stays a
+    human decision on the Duplicates tab)."""
+    base = "SELECT * FROM projects WHERE merged_into IS NULL AND {cond}"
+    probes = []
+    if portal and portal_ref:
+        probes.append(("portal = ? AND portal_ref = ?", (portal, portal_ref)))
+    if url_norm:
+        probes.append(("url_norm = ?", (url_norm,)))
+    if dk and len(dk) > 12:
+        probes.append(("dup_key = ?", (dk,)))
+    for cond, params in probes:
+        for row in db.execute(base.format(cond=cond), params).fetchall():
+            row = dict(row)
+            if exclude_via and exclude_via in (row.get("seen_via") or "").split(","):
+                continue
+            return row
+    return None
+
+
+def apply_location(scores, row):
+    """Remote-location penalty. It may demote GO to MAYBE, but never pushes an
+    ambiguous scored-in MAYBE back to PASS (Michael: don't screen out Tassie)."""
+    loc_text = (row.get("location", "") or "") + " " + (row.get("signal_summary", "") or "")
+    flag, penalty = check_location_flag(loc_text)
+    if penalty:
+        scores["doability_score"] = max(0, scores["doability_score"] + penalty)
+        if scores["doability_score"] < 70 and scores["verdict"] == "GO":
+            scores["verdict"] = "MAYBE"
+        if (scores["doability_score"] < 50 and scores["verdict"] == "MAYBE"
+                and "scored in" not in (scores.get("risk_flags") or "")):
+            scores["verdict"] = "PASS"
+    return flag
+
+
+def upsert_tender(db, row, source, run_id=None, alert_message_id=None):
+    """Insert or merge one tender from an alert or manual entry.
+    Returns ("new"|"matched", project_hash)."""
+    now = datetime.utcnow().isoformat()
+    portal, ref = row.get("portal", ""), row.get("portal_ref", "")
+    url_norm = row.get("url_norm") or email_ingest.normalise_url(row.get("source_url", ""))
+    dk = dup_key(row)
+    hit = find_existing(db, portal, ref, url_norm, dk)
+    if hit:
+        # Already known (most often from the scrape): record the channel, fill
+        # blanks, keep the richer scraped text and the existing triage.
+        db.execute("""UPDATE projects SET seen_via=?, last_seen_at=?,
+                      portal=COALESCE(NULLIF(portal,''), ?), portal_ref=COALESCE(NULLIF(portal_ref,''), ?),
+                      url_norm=COALESCE(NULLIF(url_norm,''), ?), closing_date=COALESCE(NULLIF(closing_date,''), ?)
+                      WHERE project_hash=?""",
+                   (_add_via(hit.get("seen_via"), source), now, portal, ref, url_norm,
+                    row.get("closing_date") or None, hit["project_hash"]))
+        return "matched", hit["project_hash"]
+
+    scores = score_project(row)
+    location_flag = apply_location(scores, row)
+    closing_date = row.get("closing_date") or extract_closing_date(
+        (row.get("stage", "") or "") + " " + (row.get("signal_summary", "") or ""))
+    is_closed = 1 if deadline_status(closing_date) == "closed" else 0
+    h = make_hash(row)
+    if db.execute("SELECT 1 FROM projects WHERE project_hash=?", (h,)).fetchone():
+        h = hashlib.sha256((h + (ref or url_norm or now)).encode()).hexdigest()[:16]
+    db.execute("""INSERT INTO projects
+        (project_hash, project_name, customer, location, asset_type, sector, stage, year,
+         source_url, opportunity_type, signal_summary, notes, active,
+         doability_score, verdict, action_bucket, moats, moat_count, risk_flags, commodity,
+         first_seen_at, last_seen_at, run_id, closing_date, is_closed, location_flag,
+         confidence, why_fit, dup_key, source, seen_via, portal, portal_ref, url_norm, alert_message_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (h, row.get("project_name", ""), row.get("customer", ""), row.get("location", ""),
+         row.get("asset_type", ""), row.get("sector", ""), row.get("stage", ""),
+         str(date.today().year), row.get("source_url", ""), row.get("opportunity_type", ""),
+         row.get("signal_summary", ""), row.get("notes", ""), "true",
+         scores["doability_score"], scores["verdict"], scores["action_bucket"], scores["moats"],
+         scores["moat_count"], scores["risk_flags"], scores["commodity"],
+         now, now, run_id or (source + "-" + now[:10]), closing_date, is_closed, location_flag,
+         scores.get("confidence"), scores.get("why"), dk, source, source, portal, ref, url_norm,
+         alert_message_id))
+    return "new", h
+
+
+def alert_item_to_row(item, portal_name=""):
+    """Map a parsed alert item onto the projects row shape the scorer expects."""
+    stage_bits = ["Open"]
+    if item.get("closing_date"):
+        stage_bits.append("closes " + item["closing_date"])
+    return {
+        "project_name": item.get("title", "") or "Untitled alert",
+        "customer": item.get("buyer", ""),
+        "location": item.get("location", ""),
+        "source_url": item.get("url", ""),
+        "opportunity_type": item.get("opportunity_type", ""),
+        "stage": " — ".join(stage_bits),
+        "signal_summary": item.get("snippet", ""),
+        "notes": f"Received by email alert from {item.get('portal_name') or portal_name}"
+                 + (f" (ref {item['portal_ref']})" if item.get("portal_ref") else ""),
+        "closing_date": item.get("closing_date"),
+        "portal": item.get("portal", ""),
+        "portal_ref": item.get("portal_ref", ""),
+        "url_norm": item.get("url_norm", ""),
+    }
+
+
+def ingest_alert_message(db, msg, via="email"):
+    """Parse one alert email and upsert every tender in it. Idempotent on the
+    email's Message-ID, so a poller re-run or a double-forward is harmless."""
+    parsed = email_ingest.parse(msg)
+    mid = (msg.get("message_id") or "").strip() or (
+        "nomsgid-" + hashlib.sha256(((msg.get("subject") or "") + (msg.get("text") or "")
+                                     + (msg.get("html") or "")).encode()).hexdigest()[:20])
+    if db.execute("SELECT 1 FROM alert_messages WHERE message_id=?", (mid,)).fetchone():
+        return {"duplicate_email": True, "message_id": mid, "portal": parsed["portal"],
+                "items": len(parsed["items"]), "new": 0, "matched": 0, "tenders": []}
+    new = matched = 0
+    out = []
+    for item in parsed["items"]:
+        status, h = upsert_tender(db, alert_item_to_row(item, parsed["portal_name"]), "alert",
+                                  alert_message_id=mid)
+        new += status == "new"
+        matched += status == "matched"
+        out.append({"title": item["title"], "status": status, "project_hash": h,
+                    "portal_ref": item["portal_ref"], "closing_date": item["closing_date"]})
+    db.execute("""INSERT INTO alert_messages (message_id, received_at, sender, subject, portal, via,
+                  items_parsed, items_new, items_matched, fallback) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               (mid, datetime.utcnow().isoformat(), (msg.get("sender") or "")[:300],
+                (msg.get("subject") or "")[:500], parsed["portal"], via, len(parsed["items"]),
+                new, matched, 1 if any(i.get("fallback") for i in parsed["items"]) else 0))
+    db.commit()
+    return {"message_id": mid, "portal": parsed["portal"], "items": len(parsed["items"]),
+            "new": new, "matched": matched, "tenders": out}
+
+
 # ─── CSV Ingest ─────────────────────────────────────────────────────────
 
 PROJECT_FIELDS = [
@@ -566,14 +791,9 @@ def ingest_projects(csv_text, run_id, db):
         scores = score_project(row)
 
         # Location flag + score adjustment
-        loc_text = row.get("location", "") + " " + row.get("signal_summary", "")
-        location_flag, loc_penalty = check_location_flag(loc_text)
-        if loc_penalty:
-            scores["doability_score"] = max(0, scores["doability_score"] + loc_penalty)
-            if scores["doability_score"] < 70 and scores["verdict"] == "GO":
-                scores["verdict"] = "MAYBE"
-            if scores["doability_score"] < 50 and scores["verdict"] == "MAYBE":
-                scores["verdict"] = "PASS"
+        location_flag = apply_location(scores, row)
+        portal, portal_ref, url_norm = portal_fields(row.get("source_url", ""),
+                                                     (row.get("stage", "") or "") + " " + (row.get("notes", "") or ""))
 
         # Extract closing date
         stage_text = row.get("stage", "") + " " + row.get("notes", "")
@@ -581,7 +801,21 @@ def ingest_projects(csv_text, run_id, db):
         ds = deadline_status(closing_date)
         is_closed = 1 if ds == 'closed' else 0
 
-        existing = db.execute("SELECT id, first_seen_at, ai_summary FROM projects WHERE project_hash = ?", (h,)).fetchone()
+        existing = db.execute("SELECT id, first_seen_at, ai_summary, seen_via FROM projects WHERE project_hash = ?", (h,)).fetchone()
+        if not existing:
+            # Not seen by the scrape before - but an email alert or a manual entry
+            # may already have created it. Adopt that row rather than duplicate it.
+            prior = find_existing(db, portal, portal_ref, url_norm, dk, exclude_via="scrape")
+            if prior:
+                h = prior["project_hash"]
+                existing = db.execute("SELECT id, first_seen_at, ai_summary, seen_via FROM projects WHERE project_hash = ?", (h,)).fetchone()
+                # take the scrape's richer descriptive fields on the adopted row
+                db.execute("""UPDATE projects SET project_name=?, customer=COALESCE(NULLIF(?,''), customer),
+                              location=COALESCE(NULLIF(?,''), location), asset_type=?, sector=?, year=?,
+                              socI_relevance=? WHERE project_hash=?""",
+                           (row.get("project_name", ""), row.get("customer", ""), row.get("location", ""),
+                            row.get("asset_type", ""), row.get("sector", ""), row.get("year", ""),
+                            row.get("socI_relevance", ""), h))
 
         proj_data = {**scores,
             "project_name": row.get("project_name",""),
@@ -599,7 +833,9 @@ def ingest_projects(csv_text, run_id, db):
                 doability_score=?, verdict=?, action_bucket=?, moats=?, moat_count=?,
                 risk_flags=?, commodity=?, last_seen_at=?, run_id=?,
                 stage=?, opportunity_type=?, priority_score=?, signal_summary=?, notes=?, active=?,
-                closing_date=?, is_closed=?, location_flag=?, confidence=?, why_fit=?, dup_key=?
+                closing_date=COALESCE(?, closing_date), is_closed=?, location_flag=?, confidence=?, why_fit=?, dup_key=?,
+                seen_via=?, portal=COALESCE(NULLIF(portal,''), ?), portal_ref=COALESCE(NULLIF(portal_ref,''), ?),
+                url_norm=COALESCE(NULLIF(url_norm,''), ?)
                 WHERE project_hash=?""",
                 (scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
@@ -607,8 +843,9 @@ def ingest_projects(csv_text, run_id, db):
                  row.get("stage",""), row.get("opportunity_type",""),
                  row.get("priority_score",""), row.get("signal_summary",""),
                  row.get("notes",""), row.get("active",""),
-                 closing_date, is_closed, location_flag,
-                 scores.get("confidence"), scores.get("why"), dk, h))
+                 closing_date or None, is_closed, location_flag,
+                 scores.get("confidence"), scores.get("why"), dk,
+                 _add_via(existing["seen_via"], "scrape"), portal, portal_ref, url_norm, h))
             # Regenerate summary if score changed significantly or no summary yet
             if not existing["ai_summary"]:
                 new_for_summary.append((h, proj_data))
@@ -621,8 +858,9 @@ def ingest_projects(csv_text, run_id, db):
                  signal_summary, notes, active,
                  doability_score, verdict, action_bucket, moats, moat_count,
                  risk_flags, commodity, first_seen_at, last_seen_at, run_id,
-                 closing_date, is_closed, location_flag, confidence, why_fit, dup_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 closing_date, is_closed, location_flag, confidence, why_fit, dup_key,
+                 source, seen_via, portal, portal_ref, url_norm)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (h, vals["project_name"], vals["customer"], vals["location"],
                  vals["asset_type"], vals["sector"], vals["stage"], vals["year"],
                  vals["source_url"], vals["socI_relevance"], vals["opportunity_type"],
@@ -630,7 +868,8 @@ def ingest_projects(csv_text, run_id, db):
                  scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
                  now, now, run_id, closing_date, is_closed, location_flag,
-                 scores.get("confidence"), scores.get("why"), dk))
+                 scores.get("confidence"), scores.get("why"), dk,
+                 "scrape", "scrape", portal, portal_ref, url_norm))
             new_for_summary.append((h, proj_data))
 
     db.commit()
@@ -692,6 +931,18 @@ def get_triage(project_hash):
         "comments": [dict(c) for c in comments],
     })
 
+def _clean_value(v):
+    """'$1.2m', '1,200,000', '850k' -> '1200000' (string, whole dollars). Blank stays blank."""
+    v = (str(v or "")).strip().lower().replace(",", "").replace("$", "").replace("aud", "").strip()
+    if not v:
+        return ""
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(k|m|mil|million|b)?", v)
+    if not m:
+        return ""
+    n = float(m.group(1)) * {"k": 1e3, "m": 1e6, "mil": 1e6, "million": 1e6, "b": 1e9}.get(m.group(2) or "", 1)
+    return str(int(round(n)))
+
+
 @app.route("/api/triage/<project_hash>", methods=["POST"])
 def save_triage(project_hash):
     """Merge-safe partial update: only keys present in the request body are
@@ -716,6 +967,17 @@ def save_triage(project_hash):
     owner = pick("owner")
     next_steps = pick("next_steps")
     scope = pick("scope")
+    value = _clean_value(pick("value"))
+    outcome_reason = pick("outcome_reason")
+    # stamp the first time a tender reaches each milestone
+    submitted_at = cur.get("submitted_at") or ""
+    if status in ("Submitted", "Awaiting outcome", "Won", "Lost") and not submitted_at:
+        submitted_at = now
+    outcome_at = cur.get("outcome_at") or ""
+    if status in ("Won", "Lost") and (not outcome_at or cur.get("status") != status):
+        outcome_at = now
+    if status not in ("Won", "Lost"):
+        outcome_at = ""
     try:
         db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at, status, owner, next_steps, scope, status_updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -726,6 +988,9 @@ def save_triage(project_hash):
             next_steps=excluded.next_steps, scope=excluded.scope,
             status_updated_at=excluded.status_updated_at""",
             (project_hash, decision, reason, decided_by, now, status, owner, next_steps, scope, now))
+        db.execute("""UPDATE triage SET value=?, outcome_reason=?, submitted_at=?, outcome_at=?
+                      WHERE project_hash=?""",
+                   (value, outcome_reason, submitted_at or None, outcome_at or None, project_hash))
         db.commit()
     except Exception as e:
         try:
@@ -733,7 +998,8 @@ def save_triage(project_hash):
         except Exception:
             pass
         return jsonify({"ok": False, "error": str(e)}), 500
-    return jsonify({"ok": True, "decided_at": now})
+    return jsonify({"ok": True, "decided_at": now, "value": value,
+                    "submitted_at": submitted_at or None, "outcome_at": outcome_at or None})
 
 @app.route("/api/comments/<project_hash>", methods=["POST"])
 def add_comment(project_hash):
@@ -986,7 +1252,9 @@ def api_pipeline():
                p.doability_score, p.verdict, p.closing_date, p.is_closed,
                p.opportunity_type, p.project_hash,
                t.decision, t.reason, t.status, t.owner, t.next_steps, t.scope,
-               t.decided_by, t.decided_at, t.status_updated_at
+               t.decided_by, t.decided_at, t.status_updated_at,
+               t.value, t.outcome_reason, t.submitted_at, t.outcome_at,
+               p.source, p.seen_via, p.portal, p.portal_ref
         FROM triage t
         JOIN projects p ON p.project_hash = t.project_hash
         WHERE t.decision IS NOT NULL AND t.decision != ''
@@ -1053,9 +1321,7 @@ def api_projects():
         where += " AND (p.is_closed = 0 OR p.is_closed IS NULL)"
     rows = db.execute(f"""
         SELECT p.*,
-            CASE WHEN p.first_seen_at = p.last_seen_at AND p.run_id = (
-                SELECT id FROM runs ORDER BY created_at DESC LIMIT 1
-            ) THEN 1 ELSE 0 END as is_new,
+            CASE WHEN p.first_seen_at >= ? THEN 1 ELSE 0 END as is_new,
             t.decision as triage_decision,
             t.reason as triage_reason,
             t.decided_by as triage_decided_by,
@@ -1064,6 +1330,8 @@ def api_projects():
             t.owner as triage_owner,
             t.next_steps as triage_next_steps,
             t.scope as triage_scope,
+            t.value as triage_value,
+            t.outcome_reason as triage_outcome_reason,
             p.research_status, p.research_notes, p.verified_scope,
             p.portal_url, p.contact_info, p.researched_at,
             (SELECT COUNT(*) FROM comments c WHERE c.project_hash = p.project_hash) as comment_count
@@ -1071,7 +1339,7 @@ def api_projects():
         LEFT JOIN triage t ON t.project_hash = p.project_hash
         {where}
         ORDER BY p.doability_score DESC
-    """).fetchall()
+    """, (_new_cutoff(db),)).fetchall()
     result = []
     for r in rows:
         d = dict(r)
@@ -1079,17 +1347,27 @@ def api_projects():
         result.append(d)
     return jsonify(result)
 
+def _new_cutoff(db):
+    """'New' = first seen since the latest weekly run started, or in the last
+    7 days, whichever is earlier (so alerts between runs count as new)."""
+    week = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    latest = db.execute("SELECT created_at FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    return min(latest["created_at"], week) if latest else week
+
+
 @app.route("/api/projects/new")
 def api_new_projects():
     db = get_db()
-    latest = db.execute("SELECT id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
-    if not latest:
-        return jsonify([])
+    # first_seen_at never changes after insert, so this survives the a+b CSVs
+    # re-touching the same rows in one upload, and also catches email alerts
+    # that land between weekly runs.
+    cutoff = _new_cutoff(db)
     rows = db.execute("""
         SELECT * FROM projects
-        WHERE run_id = ? AND first_seen_at = last_seen_at AND active = 'true'
+        WHERE first_seen_at >= ? AND active = 'true'
+          AND (hidden = 0 OR hidden IS NULL) AND merged_into IS NULL
         ORDER BY doability_score DESC
-    """, (latest["id"],)).fetchall()
+    """, (cutoff,)).fetchall()
     return jsonify([dict(r) for r in rows])
 
 
@@ -1185,6 +1463,199 @@ def api_upload():
         "go": go, "maybe": maybe, "pass": pas,
     }
     return jsonify(results)
+
+
+# ─── Email alert ingest ─────────────────────────────────────────────────
+# Three ways in, one parser:
+#   POST /api/ingest/email   machine path (inbox poller / Power Automate); token-protected
+#   POST /api/ingest/paste   upload page: paste an alert you were forwarded
+#   POST /api/ingest/manual  upload page: add a tender by hand (source = manual)
+
+def _ingest_token_ok():
+    token = os.environ.get("INGEST_TOKEN", "")
+    if not token:
+        return True   # local dev; README says set INGEST_TOKEN on Railway
+    supplied = request.headers.get("X-Ingest-Token", "") or request.args.get("token", "")
+    return secrets.compare_digest(supplied, token)
+
+
+def _msg_from_request():
+    """Accepts raw RFC822 (.eml upload, or text body) or JSON
+    {raw} | {subject, from/sender, text, html, message_id, date}."""
+    f = request.files.get("eml") or request.files.get("file")
+    if f:
+        return email_ingest.message_from_raw(f.read())
+    if request.is_json:
+        j = request.get_json(silent=True) or {}
+        if j.get("raw"):
+            raw = j["raw"]
+            if j.get("raw_base64"):
+                import base64
+                raw = base64.b64decode(raw)
+            return email_ingest.message_from_raw(raw)
+        return {"sender": j.get("from") or j.get("sender") or "", "subject": j.get("subject", ""),
+                "text": j.get("text") or j.get("body") or "", "html": j.get("html", ""),
+                "message_id": j.get("message_id", ""), "date": j.get("date", "")}
+    data = request.get_data()
+    if data:
+        return email_ingest.message_from_raw(data)
+    return None
+
+
+@app.route("/api/ingest/email", methods=["POST"])
+def api_ingest_email():
+    if not _ingest_token_ok():
+        return jsonify({"ok": False, "error": "bad or missing X-Ingest-Token"}), 403
+    msg = _msg_from_request()
+    if not msg or not (msg.get("text") or msg.get("html") or msg.get("subject")):
+        return jsonify({"ok": False, "error": "no email content"}), 400
+    db = get_db()
+    try:
+        res = ingest_alert_message(db, msg, via=request.args.get("via", "email"))
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, **res})
+
+
+@app.route("/api/ingest/paste", methods=["POST"])
+def api_ingest_paste():
+    j = request.get_json(silent=True) or {}
+    body = (j.get("text") or "").strip()
+    if not body:
+        return jsonify({"ok": False, "error": "paste the alert text first"}), 400
+    # A pasted alert is still an alert; give it a stable id so pasting twice is harmless
+    msg = {"sender": j.get("from", ""), "subject": j.get("subject", ""),
+           "text": body, "html": "", "message_id": "paste-" + hashlib.sha256(body.encode()).hexdigest()[:24]}
+    if "<a " in body.lower() or "<table" in body.lower():
+        msg["html"], msg["text"] = body, ""
+    db = get_db()
+    try:
+        res = ingest_alert_message(db, msg, via="paste")
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, **res})
+
+
+@app.route("/api/ingest/manual", methods=["POST"])
+def api_ingest_manual():
+    j = request.get_json(silent=True) or {}
+    title = (j.get("title") or "").strip()
+    if not title:
+        return jsonify({"ok": False, "error": "title is required"}), 400
+    url = (j.get("url") or "").strip()
+    portal, ref, url_norm = portal_fields(url, j.get("portal_ref", ""))
+    row = {
+        "project_name": title, "customer": (j.get("buyer") or "").strip(),
+        "location": (j.get("location") or "").strip(), "source_url": url,
+        "opportunity_type": j.get("opportunity_type") or email_ingest._opp_type(title),
+        "stage": "Open" + (f" — closes {j['closing_date']}" if j.get("closing_date") else ""),
+        "signal_summary": (j.get("description") or "").strip(),
+        "notes": "Added manually" + (f" by {j['added_by']}" if j.get("added_by") else ""),
+        "closing_date": j.get("closing_date") or None,
+        "portal": portal, "portal_ref": (j.get("portal_ref") or ref or "").strip().upper(),
+        "url_norm": url_norm,
+    }
+    db = get_db()
+    try:
+        status, h = upsert_tender(db, row, "manual")
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "status": status, "project_hash": h})
+
+
+@app.route("/api/alerts")
+def api_alerts():
+    db = get_db()
+    rows = db.execute("SELECT * FROM alert_messages ORDER BY received_at DESC LIMIT 50").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+# ─── Decisions vs outcomes + coverage report ───────────────────────────
+
+PRE_SUBMIT = ("", "Screening", "Downloading docs", "Drafting response", "With Michael/Alister")
+
+
+def build_report(db):
+    trows = [dict(r) for r in db.execute("""
+        SELECT t.project_hash, t.decision, t.status, t.owner, t.value, t.outcome_reason,
+               t.submitted_at, t.outcome_at, t.decided_at,
+               p.project_name, p.customer, p.source, p.seen_via, p.doability_score, p.verdict
+        FROM triage t JOIN projects p ON p.project_hash = t.project_hash
+        WHERE t.decision IS NOT NULL AND t.decision != ''""").fetchall()]
+
+    def stage(r):
+        st = r.get("status") or ""
+        if st in ("Won", "Lost"):
+            return st
+        if st in ("Submitted", "Awaiting outcome"):
+            return "Submitted / awaiting"
+        return "In progress"
+
+    cols = ["In progress", "Submitted / awaiting", "Won", "Lost"]
+    matrix = {}
+    for dec in ("full", "philip", "pass"):
+        sub = [r for r in trows if r["decision"] == dec]
+        cell = {c: sum(1 for r in sub if stage(r) == c) for c in cols}
+        won_val = sum(int(r["value"]) for r in sub if stage(r) == "Won" and (r.get("value") or "").isdigit())
+        decided = cell["Won"] + cell["Lost"]
+        matrix[dec] = {**cell, "total": len(sub), "won_value": won_val,
+                       "win_rate": round(100 * cell["Won"] / decided) if decided else None}
+
+    outcomes = sorted([r for r in trows if stage(r) in ("Won", "Lost")],
+                      key=lambda r: r.get("outcome_at") or "", reverse=True)
+    awaiting = sorted([r for r in trows if stage(r) == "Submitted / awaiting"],
+                      key=lambda r: r.get("submitted_at") or "")
+
+    # Coverage: by ISO week first seen, how did tenders reach us?
+    prows = [dict(r) for r in db.execute("""
+        SELECT first_seen_at, source, seen_via, portal FROM projects
+        WHERE active='true' AND merged_into IS NULL AND first_seen_at >= ?""",
+        ((datetime.utcnow() - timedelta(weeks=8)).isoformat(),)).fetchall()]
+    weeks = {}
+    for r in prows:
+        try:
+            d = datetime.fromisoformat((r["first_seen_at"] or "")[:19])
+        except ValueError:
+            continue
+        wk = f"{d.isocalendar()[0]}-W{d.isocalendar()[1]:02d}"
+        w = weeks.setdefault(wk, {"week": wk, "scrape": 0, "alert": 0, "manual": 0,
+                                  "alert_only": 0, "both": 0})
+        src = r.get("source") or "scrape"
+        w[src] = w.get(src, 0) + 1
+        via = set((r.get("seen_via") or src).split(","))
+        if "alert" in via and "scrape" in via:
+            w["both"] += 1
+        elif "alert" in via or "manual" in via:
+            w["alert_only"] += 1   # scrape has not (yet) found it
+    alert_portals = {}
+    for r in prows:
+        if "alert" in (r.get("seen_via") or "") and "scrape" not in (r.get("seen_via") or ""):
+            k = r.get("portal") or "unknown"
+            alert_portals[k] = alert_portals.get(k, 0) + 1
+
+    return {"matrix": matrix, "columns": cols, "outcomes": outcomes, "awaiting": awaiting,
+            "coverage": sorted(weeks.values(), key=lambda w: w["week"], reverse=True),
+            "scrape_gaps_by_portal": sorted(alert_portals.items(), key=lambda kv: -kv[1]),
+            "generated_at": datetime.utcnow().isoformat()}
+
+
+@app.route("/api/report")
+def api_report():
+    return jsonify(build_report(get_db()))
+
+
+@app.route("/report")
+def report_page():
+    db = get_db()
+    rep = build_report(db)
+    alerts = [dict(r) for r in db.execute(
+        "SELECT * FROM alert_messages ORDER BY received_at DESC LIMIT 15").fetchall()]
+    return render_template("report.html", r=rep, alerts=alerts,
+                           portals={p["key"]: p["name"] for p in email_ingest.PORTALS})
 
 
 # ─── Init ───────────────────────────────────────────────────────────────
