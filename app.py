@@ -557,6 +557,12 @@ def ingest_projects(csv_text, run_id, db):
     total = 0
     new_for_summary = []  # collect new projects needing AI summary
 
+    # One query up front instead of one per row: on Railway each round trip to
+    # Postgres costs milliseconds, and ~1,400 rows of per-row lookups pushed the
+    # request past gunicorn's timeout (the page then got HTML, not JSON).
+    known = {r["project_hash"]: r for r in db.execute(
+        "SELECT id, first_seen_at, ai_summary, project_hash FROM projects").fetchall()}
+
     for row in reader:
         if row.get("active", "").lower() != "true":
             continue
@@ -581,7 +587,7 @@ def ingest_projects(csv_text, run_id, db):
         ds = deadline_status(closing_date)
         is_closed = 1 if ds == 'closed' else 0
 
-        existing = db.execute("SELECT id, first_seen_at, ai_summary FROM projects WHERE project_hash = ?", (h,)).fetchone()
+        existing = known.get(h)
 
         proj_data = {**scores,
             "project_name": row.get("project_name",""),
@@ -632,6 +638,7 @@ def ingest_projects(csv_text, run_id, db):
                  now, now, run_id, closing_date, is_closed, location_flag,
                  scores.get("confidence"), scores.get("why"), dk))
             new_for_summary.append((h, proj_data))
+            known[h] = {"id": None, "first_seen_at": now, "ai_summary": None, "project_hash": h}
 
     db.commit()
     return total, new_count

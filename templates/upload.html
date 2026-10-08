@@ -83,7 +83,10 @@ async function upload(){
 
   try {
     const r = await fetch('/api/upload', {method:'POST', body:fd});
-    const d = await r.json();
+    const raw = await r.text();
+    let d;
+    try { d = JSON.parse(raw); }
+    catch(_) { throw new Error('Server error ' + r.status + ' (' + (r.statusText||'no JSON') + '). Check Railway logs; the upload may have timed out.'); }
     if(!r.ok) throw new Error(d.error||'Upload failed');
     const s = d.summary;
     res.className = 'result ok'; res.style.display = 'block';
