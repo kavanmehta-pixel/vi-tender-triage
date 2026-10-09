@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VI Triage · Data repair</title>
+<style>
+  :root{--bg:#0b0d12;--panel:#141821;--line:#262c38;--text:#e8ebf1;--muted:#9aa3b2;--accent:#f0a93b;--ok:#2ecc8f;--err:#e05563;--blue:#5fb3f0}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:28px 16px 60px}
+  a{color:var(--blue)} h1{font-size:22px;margin:12px 0 4px} h1 span{color:var(--accent)} h2{font-size:15px;margin:26px 0 8px}
+  p{color:var(--muted)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  button{margin-top:16px;padding:10px 18px;border-radius:8px;border:0;background:var(--accent);color:#1a1205;font-weight:700;cursor:pointer}
+  .ok{color:var(--ok)} .bad{color:var(--err)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/">← Dashboard</a>
+  <h1>Data repair <span>· preview</span></h1>
+  <p>Nothing changes until you press Apply. Back up first: <a href="/api/export">download a backup</a>.</p>
+
+  <h2>Decisions hidden on merged duplicates ({{ orphans|length }})</h2>
+  <div class="panel">
+    {% if orphans %}
+    <table><thead><tr><th>Merged row</th><th>Its decision</th><th>Kept row</th><th>Kept row's decision</th><th>What Apply does</th></tr></thead><tbody>
+    {% for o in orphans %}
+      <tr><td>{{ o.project_name }}</td><td>{{ o.decision }}{% if o.status %} · {{ o.status }}{% endif %}</td>
+          <td>{{ o.canonical_name or o.canonical }}</td><td>{{ o.canonical_decision or '—' }}</td><td>{{ o.action }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% else %}<span class="ok">None.</span>{% endif %}
+  </div>
+
+  <h2>Closing dates the old parser got wrong ({{ changed|length }})</h2>
+  <p>The dashboard already shows the corrected dates. Apply saves them, keeping the old value in <code>closing_date_prev</code>.</p>
+  <div class="panel">
+    {% if changed %}
+    <table><thead><tr><th>Project</th><th>Stored</th><th>Corrected</th><th>Stage text</th></tr></thead><tbody>
+    {% for c in changed[:300] %}
+      <tr><td>{{ c.project_name }}</td><td>{{ c.stored or '—' }}</td><td>{{ c.effective or 'none stated' }}</td><td>{{ c.stage }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+    {% if changed|length > 300 %}<p>…and {{ changed|length - 300 }} more.</p>{% endif %}
+    {% else %}<span class="ok">None.</span>{% endif %}
+  </div>
+
+  <button onclick="apply()">Apply repairs</button> <span id="msg"></span>
+</div>
+<script>
+async function apply(){
+  if(!confirm('Apply these repairs? Download a backup first if you have not.')) return;
+  const m=document.getElementById('msg'); m.textContent='Working…';
+  const r=await fetch('/admin/repair',{method:'POST'});
+  const d=await r.json().catch(()=>({}));
+  m.innerHTML=d.ok?`<span class="ok">Done: ${d.decisions_moved} decisions moved, ${d.decisions_noted} noted as comments, ${d.closing_dates_fixed} closing dates saved.</span>`
+                 :`<span class="bad">${(d.error||'Failed').replace(/</g,'&lt;')}</span>`;
+}
+</script>
+</body>
+</html>

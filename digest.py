@@ -13,7 +13,9 @@ Env vars:
   DIGEST_TO      comma-separated recipients
   DASHBOARD_URL  default https://web-production-59089.up.railway.app
 """
+import html as _html
 import os
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -21,8 +23,8 @@ from datetime import datetime, timedelta
 
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://web-production-59089.up.railway.app")
 
-DEC_LABEL = {"full": "Full tender response", "philip": "Philip reach-out", "pass": "Pass"}
-DEC_COLOR = {"full": "#1d7a4f", "philip": "#6b4fa0", "pass": "#b3434f"}
+DEC_LABEL = {"full": "Full tender response", "philip": "Philip reach-out", "bdm": "Sent to BDM", "pass": "Pass"}
+DEC_COLOR = {"full": "#1d7a4f", "philip": "#6b4fa0", "bdm": "#1a4f8b", "pass": "#b3434f"}
 
 ACTIVE_STATUSES = ("Screening", "Downloading docs", "Drafting response",
                    "With Michael/Alister", "Submitted", "Awaiting outcome")
@@ -38,21 +40,19 @@ def collect(db):
     today = datetime.utcnow().date().isoformat()
     horizon = (datetime.utcnow() + timedelta(days=14)).date().isoformat()
 
-    new_this_week = db.execute("""
-        SELECT p.project_name, p.customer, p.location, p.doability_score, p.verdict,
-               p.closing_date, p.source_url, t.decision AS triage_decision
-        FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
-        WHERE p.active='true' AND (p.hidden=0 OR p.hidden IS NULL) AND p.merged_into IS NULL
-          AND p.first_seen_at >= ?
-          AND (t.decision IS NULL OR t.decision != 'pass')
-        ORDER BY p.doability_score DESC
-    """, (week_ago,)).fetchall()
+    # Same loader as the dashboard, so "new" and deadlines match what people see.
+    from app import load_projects
+    rows = load_projects(db, hide_closed=True)
+    keys = ("project_name", "customer", "location", "doability_score", "verdict", "closing_date",
+            "source_url", "triage_decision", "seen_via", "portal_ref")
+    new_this_week = [{k: p.get(k) for k in keys} for p in rows
+                     if p.get("is_new") and p.get("triage_decision") != "pass"]
 
     decided_this_week = db.execute("""
         SELECT p.project_name, p.customer, p.closing_date, p.source_url,
                t.decision, t.reason, t.decided_by, t.owner, t.next_steps, t.scope, t.status
         FROM triage t JOIN projects p ON p.project_hash = t.project_hash
-        WHERE t.decided_at >= ? AND t.decision IN ('full','philip')
+        WHERE t.decided_at >= ? AND t.decision IN ('full','philip','bdm') AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
         ORDER BY CASE t.decision WHEN 'full' THEN 0 WHEN 'philip' THEN 1 ELSE 2 END
     """, (week_ago,)).fetchall()
 
@@ -60,7 +60,7 @@ def collect(db):
         SELECT p.project_name, p.customer, p.closing_date, p.source_url,
                t.decision, t.status, t.owner, t.next_steps, t.scope
         FROM triage t JOIN projects p ON p.project_hash = t.project_hash
-        WHERE t.decision IN ('full','philip')
+        WHERE t.decision IN ('full','philip','bdm') AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
           AND (t.status IS NULL OR t.status NOT IN ('Won','Lost'))
         ORDER BY CASE WHEN p.closing_date IS NULL OR p.closing_date='' THEN 1 ELSE 0 END,
                  p.closing_date ASC
@@ -69,37 +69,46 @@ def collect(db):
     outcomes = db.execute("""
         SELECT p.project_name, p.customer, t.status, t.owner
         FROM triage t JOIN projects p ON p.project_hash = t.project_hash
-        WHERE t.status IN ('Won','Lost') AND t.status_updated_at >= ?
+        WHERE t.status IN ('Won','Lost') AND t.status_updated_at >= ? AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
     """, (week_ago,)).fetchall()
 
-    deadlines = db.execute("""
-        SELECT p.project_name, p.customer, p.closing_date, p.source_url,
-               t.decision, t.owner, t.status
-        FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
-        WHERE p.active='true' AND (p.is_closed=0 OR p.is_closed IS NULL)
-          AND p.closing_date >= ? AND p.closing_date <= ?
-          AND (t.decision IN ('full','philip') OR p.verdict='GO')
-        ORDER BY p.closing_date ASC
-    """, (today, horizon)).fetchall()
+    deadlines = sorted(
+        ({"project_name": p["project_name"], "customer": p.get("customer"), "closing_date": p["closing_date"],
+          "source_url": p.get("source_url"), "decision": p.get("triage_decision"),
+          "owner": p.get("triage_owner"), "status": p.get("triage_status")}
+         for p in rows
+         if p.get("closing_date") and today <= p["closing_date"] <= horizon
+         and (p.get("triage_decision") in ("full", "philip", "bdm") or p.get("verdict") == "GO")),
+        key=lambda d: d["closing_date"])
 
     return {
-        "new": [dict(r) for r in new_this_week],
+        "new": new_this_week,
         "decided": [dict(r) for r in decided_this_week],
         "pipeline": [dict(r) for r in pipeline],
         "outcomes": [dict(r) for r in outcomes],
-        "deadlines": [dict(r) for r in deadlines],
+        "deadlines": deadlines,
     }
 
 
 def _esc(s):
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return _html.escape(str(s or ""), quote=True)
 
 
 def _link(name, url):
     name = _esc(name)
-    if url:
+    if url and re.match(r"https?://", str(url), re.I):
         return f'<a href="{_esc(url)}" style="color:#1a4f8b;text-decoration:none">{name}</a>'
     return name
+
+
+def _via_tag(r):
+    """'· via email alert' when a tender reached us by alert/manual entry, not the scrape."""
+    via = (r.get("seen_via") or "").split(",")
+    if "alert" in via:
+        return " · via email alert" + (f" ({_esc(r['portal_ref'])})" if r.get("portal_ref") else "")
+    if "manual" in via:
+        return " · added manually"
+    return ""
 
 
 def build_html(data):
@@ -128,7 +137,8 @@ def build_html(data):
             dec = r.get("triage_decision")
             rows += (f'<tr><td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px">'
                      f'{_link(r["project_name"], r.get("source_url"))}'
-                     f'<div style="color:#777;font-size:11px">{_esc(r["customer"])} · {_esc(r.get("location",""))}</div></td>'
+                     f'<div style="color:#777;font-size:11px">{_esc(r["customer"])} · {_esc(r.get("location",""))}'
+                     f'{_via_tag(r)}</div></td>'
                      f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:center">'
                      f'<b>{r["doability_score"]}</b> {_esc(r["verdict"])}</td>'
                      f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:12px">{_esc(r.get("closing_date") or "—")}</td>'
@@ -231,6 +241,39 @@ def build_html(data):
 </body></html>"""
 
 
+def smtp_configured():
+    return bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASS"))
+
+
+def send_mail(subject, html, to, cc=None, reply_to=None):
+    """Send one HTML email. Returns (ok, detail). 20s network timeout."""
+    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user = os.environ.get("SMTP_USER", "")
+    password = os.environ.get("SMTP_PASS", "")
+    sender = os.environ.get("DIGEST_FROM", user)
+    to = [t for t in (to or []) if t]
+    cc = [c for c in (cc or []) if c and c not in to]
+    if not (user and password):
+        return False, "email not configured (SMTP_USER / SMTP_PASS)"
+    if not to:
+        return False, "no recipient"
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP(host, port, timeout=20) as s:
+        s.starttls()
+        s.login(user, password)
+        s.sendmail(sender, to + cc, msg.as_string())
+    return True, "sent to " + ", ".join(to + cc)
+
+
 def send(db):
     """Build and email the digest. Returns (ok, detail)."""
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -253,7 +296,7 @@ def send(db):
     msg["To"] = ", ".join(to)
     msg.attach(MIMEText(html, "html"))
 
-    with smtplib.SMTP(host, port) as s:
+    with smtplib.SMTP(host, port, timeout=20) as s:
         s.starttls()
         s.login(user, password)
         s.sendmail(sender, to, msg.as_string())

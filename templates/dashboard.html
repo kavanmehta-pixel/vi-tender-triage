@@ -18,6 +18,7 @@
   /* triage colours */
   --t-pass:#e05563;--t-pass-dim:rgba(224,85,99,.12);
   --t-philip:#a78bfa;--t-philip-dim:rgba(167,139,250,.12);
+  --t-bdm:#5fb3f0;--t-bdm-dim:rgba(95,179,240,.12);
   --t-full:#2ecc8f;--t-full-dim:rgba(46,204,143,.12);
 }
 *{margin:0;padding:0;box-sizing:border-box}
@@ -26,6 +27,9 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI'
 header{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:18px}
 h1{font-size:21px;font-weight:700}h1 span{color:var(--amber)}
 .sub{color:var(--muted);font-size:12.5px;margin-top:5px;max-width:860px;line-height:1.5}
+.src-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:10.5px;font-weight:700;vertical-align:middle}
+.src-alert{background:rgba(91,157,217,.15);color:var(--mon)}.src-manual{background:rgba(245,166,35,.14);color:var(--amber)}
+.pipe-val{font-variant-numeric:tabular-nums;white-space:nowrap}
 .stamp{color:var(--dim);font-size:11.5px;text-align:right;line-height:1.6}
 .stamp a{color:var(--amber);text-decoration:none;font-weight:600}
 .stamp a:hover{text-decoration:underline}
@@ -57,6 +61,12 @@ tr.row.is-new td{border-left:3px solid var(--new)}
 tr.row.is-closed td{opacity:.45}
 tr.row.triaged-pass td{border-left:3px solid var(--t-pass)}
 tr.row.triaged-philip td{border-left:3px solid var(--t-philip)}
+tr.row.triaged-bdm td{border-left:3px solid var(--t-bdm)}
+.n.bdm{color:var(--t-bdm)}
+.lane-pill{display:inline-block;margin-left:6px;font-size:10.5px;padding:1px 6px;border-radius:4px;border:1px dashed var(--line);color:var(--muted)}
+.lane-hint{font-size:11.5px;color:var(--muted);margin:6px 0 2px}
+.nav-links a{color:var(--muted)}
+.notify-msg{font-size:11.5px;color:var(--t-bdm);margin-left:8px}
 tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .pname{font-weight:600;max-width:380px;line-height:1.4}
 .pname a{color:var(--text);text-decoration:none}.pname a:hover{color:var(--amber);text-decoration:underline}
@@ -72,6 +82,7 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .b-act{background:rgba(46,204,143,.1);color:var(--go)}.b-mon{background:rgba(91,157,217,.12);color:var(--mon)}.b-bd{background:rgba(167,139,250,.12);color:var(--bd)}.b-rev{background:rgba(139,152,171,.12);color:var(--muted)}
 .b-t-pass{background:var(--t-pass-dim);color:var(--t-pass);border:1px solid rgba(224,85,99,.3)}
 .b-t-philip{background:var(--t-philip-dim);color:var(--t-philip);border:1px solid rgba(167,139,250,.3)}
+.b-t-bdm{background:var(--t-bdm-dim);color:var(--t-bdm);border:1px solid rgba(95,179,240,.3)}
 .b-t-full{background:var(--t-full-dim);color:var(--t-full);border:1px solid rgba(46,204,143,.3)}
 .dl-urgent{display:inline-flex;align-items:center;gap:4px;background:rgba(255,77,77,.15);color:var(--urgent);border:1px solid rgba(255,77,77,.3);border-radius:12px;padding:2px 8px;font-size:11px;font-weight:700;white-space:nowrap}
 .dl-soon{display:inline-flex;align-items:center;gap:4px;background:rgba(249,115,22,.12);color:var(--soon);border:1px solid rgba(249,115,22,.3);border-radius:12px;padding:2px 8px;font-size:11px;font-weight:700;white-space:nowrap}
@@ -107,6 +118,7 @@ tr.row.triaged-full td{border-left:3px solid var(--t-full)}
 .triage-opt:hover{border-color:var(--amber)}
 .triage-opt.selected-pass{border-color:var(--t-pass);background:var(--t-pass-dim)}
 .triage-opt.selected-philip{border-color:var(--t-philip);background:var(--t-philip-dim)}
+.triage-opt.selected-bdm{border-color:var(--t-bdm);background:var(--t-bdm-dim)}
 .triage-opt.selected-full{border-color:var(--t-full);background:var(--t-full-dim)}
 .triage-opt-icon{font-size:18px;flex-shrink:0;margin-top:1px}
 .triage-opt-body{}
@@ -237,7 +249,7 @@ tr.row:hover .row-actions{opacity:1}
     <h1>VI Tender <span>Doability Triage</span></h1>
     <div class="sub">Moat-scored: <b style="color:var(--text)">M1</b> off-grid/remote · <b style="color:var(--text)">M2</b> solar · <b style="color:var(--text)">M3</b> monitored outcome · <b style="color:var(--text)">M4</b> AI analytics · <b style="color:var(--text)">M5</b> temp/rapid deploy · <b style="color:var(--text)">M6</b> traffic/transport analytics. Zero moats = commodity — capped, never GO.</div>
   </div>
-  <div class="stamp" id="stamp">Loading…<br><a href="/upload">Upload CSVs</a></div>
+  <div class="stamp" id="stamp">Loading…</div>
 </header>
 
 <div class="alert-banner" id="alertBanner" role="alert"></div>
@@ -258,7 +270,9 @@ tr.row:hover .row-actions{opacity:1}
   <select id="fAction"><option value="">All buckets</option><option value="ACT NOW (open)">Act now</option><option value="MONITOR (pre-market)">Monitor</option><option value="BD PLAY (sell direct)">BD play</option></select>
   <select id="fDeadline"><option value="">All deadlines</option><option value="urgent">🔴 Closes ≤7 days</option><option value="soon">🟠 Closes ≤30 days</option><option value="future">Future</option><option value="closed">Closed</option></select>
   <select id="fResearch"><option value="">All research</option><option value="done">🔍 Researched</option><option value="confirmed">✓ Confirmed fit</option><option value="not_relevant">✗ Not relevant</option><option value="none">Not researched</option></select>
-  <select id="fTriage"><option value="">All triage</option><option value="pass">⛔ Pass</option><option value="philip">💬 Philip reach-out</option><option value="full">✅ Full tender</option><option value="none">Not yet triaged</option></select>
+  <select id="fSource"><option value="">All sources</option><option value="alert">✉ Email alert</option><option value="manual">✍ Added manually</option><option value="scrape">Weekly scrape</option><option value="gap">Missed by scrape</option></select>
+  <select id="fTriage"><option value="">All triage</option><option value="pass">⛔ Pass</option><option value="philip">💬 Philip reach-out</option><option value="full">✅ Full tender</option><option value="bdm">📍 Sent to BDM</option><option value="none">Not yet triaged</option></select>
+  <select id="fLane"><option value="">All lanes</option><option value="tender">Tender / EOI (Kavan &amp; Alister)</option><option value="philip">Demand gen (Philip)</option><option value="bdm">BDM follow-up</option><option value="maybe">Maybes sweep</option></select>
   <select id="fSector"><option value="">All sectors</option></select>
   <select id="fLoc"><option value="">All locations</option></select>
   <label class="toggle-label" id="closedToggle"><input type="checkbox" id="showClosed" onchange="toggleClosed()"> Show closed</label>
@@ -287,19 +301,26 @@ tr.row:hover .row-actions{opacity:1}
 <div id="toasts" aria-live="polite"></div>
 
 <div class="foot">
-  Doability: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector/flags. <b style="color:var(--text)">Triage decisions and comments persist</b> — re-uploading CSVs won't erase them. <b style="color:var(--needsdoc)">NEEDS DOC</b> = plausible fit but the listing is too thin to judge — pull the requirements pack. Decision key: <span class="badge b-t-full">Full tender</span> → bespoke response · <span class="badge b-t-philip">Philip reach-out</span> → relationship/awareness · <span class="badge b-t-pass">Pass</span> → skip.
+  Doability: 1 moat ≈ 39, 2 ≈ 55, 3 ≈ 67, 4 ≈ 75, 5 ≈ 81 before sector/flags. <b style="color:var(--text)">Triage decisions and comments persist</b> — re-uploading CSVs won't erase them. <b style="color:var(--needsdoc)">NEEDS DOC</b> = plausible fit but the listing is too thin to judge — pull the requirements pack. Decision key: <span class="badge b-t-full">Full tender</span> → Kavan &amp; Alister respond · <span class="badge b-t-philip">Philip reach-out</span> → demand gen where security isn't in scope · <span class="badge b-t-bdm">BDM</span> → local rep follows up (emailed when allocated) · <span class="badge b-t-pass">Pass</span> → skip. A dashed <span class="lane-pill">→ lane</span> tag is the tool's suggestion until someone decides.
 </div>
 </div>
 
 <script>
-let DATA=[], DATA_NEW=[], view='all', sortK=null, sortAsc=false;
-let filt={q:'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:'',triage:'',research:''};
+let DATA=[], DATA_NEW=[], BDMS=[], view='all', sortK=null, sortAsc=false;
+const AUTH_ON={{ 'true' if auth_enabled else 'false' }};
+let CURRENT_USER={{ (current_user or '')|tojson }};
+// open mode (no sign-in yet): remember the name typed in the notes box instead
+if(!CURRENT_USER){ try{ CURRENT_USER=localStorage.getItem('vi_name')||''; }catch(e){} }
+const TEAM=['Kavan','Alister','Philip','Michael','Nick','Danny','Robin'];
+const LANE_LABEL={tender:'Tender / EOI',philip:'Philip',bdm:'BDM',maybe:'Maybes sweep',pass:'Passed'};
+let filt={q:new URLSearchParams(location.search).get('q')?.toLowerCase()||'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:'',triage:'',research:'',source:'',lane:''};
 let showClosed=false;
 const rank={GO:0,'NEEDS DOC':1,MAYBE:2,PASS:3};
 const TRIAGE_OPTS=[
   {key:'pass',   icon:'⛔', name:'Pass on this tender',       desc:'Not worth pursuing — scope mismatch, commodity play, or too much competition',   cls:'selected-pass',   badge:'b-t-pass',   label:'Pass'},
   {key:'philip', icon:'💬', name:'Philip reaches out',         desc:'Relationship/awareness play — Philip makes contact, no full tender response needed', cls:'selected-philip', badge:'b-t-philip', label:'Philip reach-out'},
-  {key:'full',   icon:'✅', name:'Full tender response',        desc:'Strong fit — go all in with a bespoke response via Ariel\'s tool + subject matter review', cls:'selected-full',   badge:'b-t-full',   label:'Full tender'},
+  {key:'full',   icon:'✅', name:'Full tender response',        desc:'Security is in scope and it fits — Kavan & Alister respond with the local BDM', cls:'selected-full',   badge:'b-t-full',   label:'Full tender'},
+  {key:'bdm',    icon:'📍', name:'Send to BDM',                desc:'Local follow-up — set the owner to the BDM for that region and they get an email', cls:'selected-bdm', badge:'b-t-bdm', label:'BDM'},
 ];
 
 async function loadData(withClosed){
@@ -336,15 +357,18 @@ async function checkHealth(){
 
 async function load(){
   checkHealth();
-  const [all, nw, stats] = await Promise.all([
+  const [all, stats, bdms] = await Promise.all([
     loadData(false),
-    fetch('/api/projects/new').then(r=>r.json()),
     fetch('/api/stats').then(r=>r.json()),
+    fetch('/api/bdms').then(r=>r.ok?r.json():[]).catch(()=>[]),
   ]);
-  DATA=all; DATA_NEW=nw;
-  document.getElementById('newBadge').textContent=nw.length;
+  if(filt.q) document.getElementById('q').value=filt.q;
+  DATA=all; BDMS=bdms; syncNew();
   const lr=stats.latest_run;
-  document.getElementById('stamp').innerHTML=(lr?`Last run: ${lr.created_at.slice(0,10)} · ${lr.new_projects} new · ${lr.total_projects} total`:'No runs yet')+'<br><a href="/upload">Upload CSVs</a>';
+  document.getElementById('stamp').innerHTML=(lr?`Last upload: ${esc(lr.created_at.slice(0,10))} · ${stats.new_this_week} new this week · ${stats.total} open`:'No runs yet')+
+    '<br><span class="nav-links"><a href="/upload">Upload / add tender</a> · <a href="/brief" target="_blank">Monday BDM email</a> · <a href="/maybes" target="_blank">Monthly maybes</a> · <a href="/report">Outcomes</a> · <a href="/settings">BDMs &amp; settings</a>'+(AUTH_ON?' · <a href="/logout">Sign out'+(CURRENT_USER?' ('+esc(CURRENT_USER)+')':'')+'</a>':'')+'</span>';
+  if(!AUTH_ON){ const b=document.getElementById('alertBanner'); b.className='alert-banner show';
+    b.innerHTML='<b>Sign-in is off.</b> Anyone with this link can see and change tenders. Set <code>APP_PASSWORD</code> in Railway to switch it on.'; }
   const secs=[...new Set(DATA.map(d=>d.sector).filter(Boolean))].sort();
   const locs=[...new Set(DATA.map(d=>d.location).filter(Boolean))].sort();
   secs.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;document.getElementById('fSector').append(o)});
@@ -358,7 +382,13 @@ async function load(){
 async function toggleClosed(){
   showClosed=document.getElementById('showClosed').checked;
   document.getElementById('closedToggle').className='toggle-label'+(showClosed?' active':'');
-  DATA=await loadData(showClosed); drawCards(); render();
+  DATA=await loadData(showClosed); syncNew(); drawCards(); render();
+}
+// "New this week" is the same rows as "All", filtered - one source of truth, so
+// decisions, deadlines and counts can never disagree between the two views.
+function syncNew(){
+  DATA_NEW=DATA.filter(d=>d.is_new);
+  document.getElementById('newBadge').textContent=DATA_NEW.length;
 }
 let PIPELINE=[];
 function setView(v){
@@ -390,31 +420,32 @@ async function renderPipeline(){
   wrap.innerHTML='<div class="loading">Loading pipeline…</div>';
   PIPELINE=await fetch('/api/pipeline').then(r=>r.json());
   if(!PIPELINE.length){ wrap.innerHTML='<div class="loading">No tenders triaged yet. Set a decision on a tender to add it to the pipeline.</div>'; return; }
-  const decLabel={full:'✅ Full tender',philip:'💬 Philip reach-out',pass:'⛔ Pass'};
-  const decBadge={full:'b-t-full',philip:'b-t-philip',pass:'b-t-pass'};
+  const decLabel={full:'✅ Full tender',philip:'💬 Philip reach-out',bdm:'📍 BDM',pass:'⛔ Pass'};
+  const decBadge={full:'b-t-full',philip:'b-t-philip',bdm:'b-t-bdm',pass:'b-t-pass'};
   // group: active work first (full + philip, not pass)
   const active=PIPELINE.filter(p=>p.decision!=='pass');
   const passed=PIPELINE.filter(p=>p.decision==='pass');
   function rowHtml(p){
     const stCls=p.status?('st-'+p.status.replace(/[^A-Za-z]/g,'')):'';
     return `<tr>
-      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}<div class="cust">${esc(p.customer)}</div>${p.reason?`<div class="pipe-note pn-reason">💭 ${esc(p.reason)}</div>`:''}${(p.comments||[]).map(c=>`<div class="pipe-note"><b>${esc(c.author||'')}:</b> ${esc(c.body||'')}<span class="pn-date">${(c.created_at||'').slice(0,10)}</span></div>`).join('')}</td>
+      <td class="pname">${safeUrl(p.source_url)?`<a href="${safeUrl(p.source_url)}" target="_blank" rel="noopener">${esc(p.project_name)}</a>`:esc(p.project_name)}<div class="cust">${esc(p.customer)}${sourceBadge(p)}</div>${p.reason?`<div class="pipe-note pn-reason">💭 ${esc(p.reason)}</div>`:''}${(p.comments||[]).map(c=>`<div class="pipe-note"><b>${esc(c.author||'')}:</b> ${esc(c.body||'')}<span class="pn-date">${(c.created_at||'').slice(0,10)}</span></div>`).join('')}</td>
       <td><span class="badge ${decBadge[p.decision]||''}">${decLabel[p.decision]||esc(p.decision)}</span></td>
       <td>${p.scope?esc(p.scope):'<span style="color:var(--dim)">—</span>'}</td>
-      <td>${p.status?`<span class="status-pill ${stCls}">${esc(p.status)}</span>`:'<span style="color:var(--dim)">—</span>'}</td>
+      <td>${p.status?`<span class="status-pill ${stCls}">${esc(p.status)}</span>`:'<span style="color:var(--dim)">—</span>'}${p.outcome_reason&&(p.status==='Won'||p.status==='Lost')?`<div class="pipe-note">${esc(p.outcome_reason)}</div>`:''}</td>
+      <td class="pipe-val">${p.value?'$'+Number(p.value).toLocaleString('en-AU'):'<span style="color:var(--dim)">—</span>'}</td>
       <td>${p.owner?`<span class="owner-tag">${esc(p.owner)}</span>`:'<span style="color:var(--dim)">unassigned</span>'}</td>
       <td>${p.next_steps?esc(p.next_steps):'<span style="color:var(--dim)">—</span>'}</td>
-      <td>${p.closing_date?(p.deadline_status==='urgent'?`<span class="dl-urgent">🔴 ${p.closing_date}</span>`:p.deadline_status==='soon'?`<span class="dl-soon">🟠 ${p.closing_date}</span>`:p.deadline_status==='closed'?`<span class="dl-closed">${p.closing_date}</span>`:p.closing_date):'—'}</td>
+      <td>${dlBadge(p)}</td>
       <td>${esc(p.location)}</td>
     </tr>`;
   }
   wrap.innerHTML=`
     <div style="margin-bottom:10px;color:var(--muted);font-size:13px">${active.length} active in pipeline · ${passed.length} passed. This is the weekly status view for Michael, Danny, Robin & John.</div>
     <table class="pipe-table"><thead><tr>
-      <th>Tender / Customer</th><th>Decision</th><th>Scope</th><th>Status</th><th>Owner</th><th>Next step</th><th>Deadline</th><th>Loc</th>
+      <th>Tender / Customer</th><th>Decision</th><th>Scope</th><th>Status</th><th>Value</th><th>Owner</th><th>Next step</th><th>Deadline</th><th>Loc</th>
     </tr></thead><tbody>
       ${active.map(rowHtml).join('')}
-      ${passed.length?`<tr><td colspan="8" style="padding-top:18px;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Passed</td></tr>`:''}
+      ${passed.length?`<tr><td colspan="9" style="padding-top:18px;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Passed</td></tr>`:''}
       ${passed.map(rowHtml).join('')}
     </tbody></table>`;
 }
@@ -431,6 +462,7 @@ const cardsDef=[
   {id:'bd',    label:'BD plays',      cls:'bd',     test:d=>(d.action_bucket||'').startsWith('BD')},
   {id:'philip',label:'Philip reach-out',cls:'philip',test:d=>d.triage_decision==='philip'},
   {id:'full',  label:'Full tender',   cls:'full',   test:d=>d.triage_decision==='full'},
+  {id:'bdm',   label:'With BDMs',     cls:'bdm',    test:d=>d.triage_decision==='bdm'},
 ];
 function drawCards(){
   const s=src();
@@ -441,14 +473,27 @@ function drawCards(){
 function toggleCard(id){filt.card=filt.card===id?'':id;drawCards();render();}
 
 function scoreColor(s){return s>=70?'var(--go)':(s>=50?'var(--maybe)':'var(--pass)');}
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+// only http(s) links are ever rendered (blocks javascript: URLs from scraped/alert data)
+function safeUrl(u){u=String(u||'').trim();return /^https?:\/\//i.test(u)?esc(u):'';}
+function laneTag(d){
+  if(!d.lane||d.lane==='pass'||!d.lane_suggested) return '';
+  return `<span class="lane-pill" title="Suggested lane - set a decision to confirm">→ ${esc(LANE_LABEL[d.lane]||d.lane)}</span>`;
+}
 function dlBadge(d){
   const ds=d.deadline_status,cd=d.closing_date;
   if(!ds&&!cd) return '<span style="color:var(--dim);font-size:11px">—</span>';
-  if(ds==='closed') return `<span class="dl-closed">${cd}</span>`;
-  if(ds==='urgent') return `<span class="dl-urgent">🔴 ${cd}</span>`;
-  if(ds==='soon')   return `<span class="dl-soon">🟠 ${cd}</span>`;
-  return `<span class="dl-future">${cd}</span>`;
+  if(ds==='closed') return `<span class="dl-closed">${esc(cd)}</span>`;
+  if(ds==='urgent') return `<span class="dl-urgent">🔴 ${esc(cd)}</span>`;
+  if(ds==='soon')   return `<span class="dl-soon">🟠 ${esc(cd)}</span>`;
+  return `<span class="dl-future">${esc(cd)}</span>`;
+}
+function sourceBadge(d){
+  const via=(d.seen_via||d.source||'').split(',');
+  const ref=d.portal_ref?` · ${esc(d.portal_ref)}`:'';
+  if(via.includes('alert')) return `<span class="src-badge src-alert" title="Received by portal email alert${via.includes('scrape')?' and also found by the weekly scrape':' — not yet found by the weekly scrape'}">✉ alert${ref}</span>`;
+  if(via.includes('manual')) return `<span class="src-badge src-manual" title="Added manually">✍ manual</span>`;
+  return '';
 }
 function triageBadge(d){
   if(!d.triage_decision) return '';
@@ -471,11 +516,17 @@ function rows(){
       if(filt.research==='done'&&!rs) return false;
       if(['confirmed','not_relevant'].includes(filt.research)&&rs!==filt.research) return false;
     }
+    if(filt.source){
+      const via=(d.seen_via||d.source||'scrape').split(',');
+      if(filt.source==='gap'){ if(via.includes('scrape')||!(via.includes('alert')||via.includes('manual'))) return false; }
+      else if(!via.includes(filt.source)) return false;
+    }
+    if(filt.lane&&d.lane!==filt.lane)return false;
     if(filt.triage){
       if(filt.triage==='none'&&d.triage_decision)return false;
       if(filt.triage!=='none'&&d.triage_decision!==filt.triage)return false;
     }
-    if(filt.q){const t=(d.project_name+' '+d.customer+' '+d.sector+' '+d.signal_summary+' '+(d.moats||'')+' '+(d.risk_flags||'')).toLowerCase();if(!t.includes(filt.q))return false;}
+    if(filt.q){const t=(d.project_name+' '+d.customer+' '+d.sector+' '+d.signal_summary+' '+(d.location||'')+' '+(d.region||'')+' '+(d.moats||'')+' '+(d.risk_flags||'')).toLowerCase();if(!t.includes(filt.q))return false;}
     return true;
   });
   if(sortK){r.sort((a,b)=>{
@@ -498,16 +549,16 @@ function render(){
     const triCls=d.triage_decision?`triaged-${d.triage_decision}`:'';
     const commentBadge=d.comment_count>0?`<span class="comment-dot">💬${d.comment_count}</span>`:'';
     return `<tr class="row ${isNew?'is-new':''} ${d.is_closed?'is-closed':''} ${triCls}" onclick="tog(this,'${esc(d.project_hash)}',${i})">
-      <td class="pname">${isNew?'<span class="new-dot"></span>':''}${d.source_url?`<a href="${esc(d.source_url)}" target="_blank" onclick="event.stopPropagation()">${esc(d.project_name)}</a>`:esc(d.project_name)}${triageBadge(d)}${commentBadge}${d.research_status?`<span class="res-badge res-${d.research_status}" title="Researched ${(d.researched_at||'').slice(0,10)}">${d.research_status==='not_relevant'?'✗ researched':'✓ researched'}</span>`:''}
+      <td class="pname">${isNew?'<span class="new-dot"></span>':''}${safeUrl(d.source_url)?`<a href="${safeUrl(d.source_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(d.project_name)}</a>`:esc(d.project_name)}${triageBadge(d)}${laneTag(d)}${sourceBadge(d)}${commentBadge}${d.research_status?`<span class="res-badge res-${d.research_status==='not_relevant'?'not_relevant':d.research_status==='confirmed'?'confirmed':'done'}" title="Researched ${(d.researched_at||'').slice(0,10)}">${d.research_status==='not_relevant'?'✗ researched':'✓ researched'}</span>`:''}
         <div class="cust">${esc(d.customer)}${d.location_flag?` <span style="color:var(--urgent);font-size:10px" title="${esc(d.location_flag)}">⚠️ remote</span>`:''}</div></td>
-      <td class="scorecell"><span class="snum" style="color:${scoreColor(d.doability_score)}">${d.doability_score}</span>
+      <td class="scorecell"><span class="snum" style="color:${scoreColor(d.doability_score)}">${+d.doability_score||0}</span>
         <div class="bar"><i style="width:${d.doability_score}%;background:${scoreColor(d.doability_score)}"></i></div></td>
-      <td><span class="badge b-${(d.verdict||'').replace(/ /g,'')}">${d.verdict}</span>${d.confidence?`<span class="conf conf-${d.confidence}">${d.confidence==="LOW"?"scope unclear":d.confidence==="MEDIUM"?"scope partial":"scope clear"}</span>`:''}</td>
+      <td><span class="badge b-${esc((d.verdict||'').replace(/ /g,''))}">${esc(d.verdict)}</span>${d.confidence?`<span class="conf conf-${d.confidence}">${d.confidence==="LOW"?"scope unclear":d.confidence==="MEDIUM"?"scope partial":"scope clear"}</span>`:''}</td>
       <td><span class="badge ${b}">${esc(d.action_bucket||'')}</span></td>
       <td>${dlBadge(d)}</td>
       <td>${d.commodity==='yes'?'<span class="badge b-PASS">COMMODITY</span>':(d.moats||'').split('; ').filter(Boolean).map(m=>`<span class="moat" title="${esc(m)}">${m.slice(0,2)}</span>`).join('')}</td>
       <td>${esc(d.sector)}</td>
-      <td class="loc">${esc(d.location)}<span class="row-actions"> <button class="icon-btn" title="Hide this tender (reversible — goes to Archive)" aria-label="Hide tender" onclick="event.stopPropagation();hideRow('${esc(d.project_hash)}','${esc((d.project_name||'').slice(0,40)).replace(/'/g,"")}')">✕</button></span></td>
+      <td class="loc">${esc(d.location)}<span class="row-actions"> <button class="icon-btn" title="Hide this tender (reversible — goes to Archive)" aria-label="Hide tender" data-hash="${esc(d.project_hash)}" data-name="${esc((d.project_name||'').slice(0,40))}" onclick="event.stopPropagation();hideRow(this.dataset.hash,this.dataset.name)">✕</button></span></td>
     </tr>
     <tr class="detail" id="det${i}" style="display:none"><td colspan="8">
       <div class="detail-inner">
@@ -525,14 +576,14 @@ function render(){
               ${d.verified_scope?`<b>Verified scope:</b> ${esc(d.verified_scope)}<br><br>`:''}
               ${d.research_notes?`<b>Assessment:</b> ${esc(d.research_notes)}<br><br>`:''}
               ${d.contact_info?`<b>Contact / how to enter:</b> ${esc(d.contact_info)}<br>`:''}
-              ${d.portal_url?`<b>Portal:</b> <a href="${esc(d.portal_url)}" target="_blank" rel="noopener">${esc(d.portal_url)}</a>`:''}
+              ${safeUrl(d.portal_url)?`<b>Portal:</b> <a href="${safeUrl(d.portal_url)}" target="_blank" rel="noopener">${esc(d.portal_url)}</a>`:''}
             </div>
           </div>` : ''}
           ${d.location_flag ? `<div class="detail-section">
             <div class="detail-label loc-flag-label">⚠️ Location flag</div>
             <div class="detail-text loc-flag">${esc(d.location_flag)}</div>
           </div>` : ''}
-          ${d.closing_date?`<div class="detail-section"><div class="detail-label">Deadline</div><div class="detail-text" style="color:${d.deadline_status==='urgent'?'var(--urgent)':d.deadline_status==='soon'?'var(--soon)':'var(--muted)'}">${d.closing_date} (${d.deadline_status||'unknown'})</div></div>`:''}
+          ${d.closing_date?`<div class="detail-section"><div class="detail-label">Deadline</div><div class="detail-text" style="color:${d.deadline_status==='urgent'?'var(--urgent)':d.deadline_status==='soon'?'var(--soon)':'var(--muted)'}">${esc(d.closing_date)} (${esc(d.deadline_status||'unknown')})</div></div>`:''}
           <div class="detail-section">
             <div class="detail-label">Why this score (${d.doability_score})</div>${d.why_fit?`<div class="detail-text" style="margin-bottom:7px;color:var(--muted)">Inferred from — ${esc(d.why_fit)}</div>`:''}
             <div>${d.moats?d.moats.split('; ').map(t=>`<span class="tag pos">✓ ${esc(t)}</span>`).join(''):'<span class="tag neg">no moats — commodity scope</span>'}
@@ -541,7 +592,8 @@ function render(){
           <div class="detail-section">
             <div class="detail-label">Details</div>
             <div class="detail-text"><b>Type:</b> ${esc(d.opportunity_type)||'—'} · <b>Stage:</b> ${esc(d.stage)||'—'} · <b>Asset:</b> ${esc(d.asset_type)||'—'} · <b>Year:</b> ${esc(d.year)||'—'}<br>
-            ${d.first_seen_at?`<b>First seen:</b> ${d.first_seen_at.slice(0,10)} · <b>Last seen:</b> ${d.last_seen_at.slice(0,10)}<br>`:''}</div>
+            ${d.est_value?`<b>Value:</b> $${Number(d.est_value).toLocaleString('en-AU')} (from the listing text) · `:''}<b>Region:</b> ${esc(d.region||'—')}<br>
+            ${d.first_seen_at?`<b>First seen:</b> ${esc(d.first_seen_at.slice(0,10))} · <b>Last seen:</b> ${esc((d.last_seen_at||'').slice(0,10))}<br>`:''}</div>
           </div>
           ${d.signal_summary&&!d.ai_summary?`<div class="detail-section"><div class="detail-label">Raw signal</div><div class="detail-text">${esc(d.signal_summary)}</div></div>`:''}
         </div>
@@ -554,6 +606,7 @@ function render(){
                 <div class="triage-opt-body"><div class="triage-opt-name">${o.name}</div><div class="triage-opt-desc">${o.desc}</div></div>
               </button>`).join('')}
             </div>
+            ${laneHint(d)}
             <textarea class="triage-reason" id="treason-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="Why? Add context for Michael, Danny and Robin…">${esc(d.triage_reason||'')}</textarea>
             <div class="pipeline-fields">
               <div class="pf-row">
@@ -575,7 +628,7 @@ function render(){
                   <label class="pf-label">Owner</label>
                   <select class="pf-input" id="towner-${i}" onchange="saveTriage(${i},'${esc(d.project_hash)}')">
                     <option value="">— unassigned —</option>
-                    ${['Kavan','Philip','Michael','Alister','Danny','Robin'].map(o=>`<option value="${o}" ${d.triage_owner===o?'selected':''}>${o}</option>`).join('')}
+                    ${ownerOptions(d)}
                   </select>
                 </div>
               </div>
@@ -594,17 +647,27 @@ function render(){
                   <input class="pf-input" id="tnext-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="e.g. register + download docs" value="${esc(d.triage_next_steps||'')}">
                 </div>
               </div>
+              <div class="pf-row">
+                <div class="pf-col">
+                  <label class="pf-label">Value (AUD)</label>
+                  <input class="pf-input" id="tvalue-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="e.g. 250k or 1.2m" value="${d.triage_value?Number(d.triage_value).toLocaleString('en-AU'):''}">
+                </div>
+                <div class="pf-col">
+                  <label class="pf-label">Outcome reason <span style="color:var(--dim);text-transform:none;letter-spacing:0">(Won / Lost)</span></label>
+                  <input class="pf-input" id="toutcome-${i}" oninput="queueSave(${i},'${esc(d.project_hash)}')" placeholder="e.g. lost on price to incumbent" value="${esc(d.triage_outcome_reason||'')}">
+                </div>
+              </div>
             </div>
             <div style="display:flex;align-items:center">
               <button class="triage-save" onclick="saveTriage(${i},'${esc(d.project_hash)}')">Save decision</button>
-              <span class="triage-saved" id="tsaved-${i}">✓ Saved</span>
+              <span class="triage-saved" id="tsaved-${i}">✓ Saved</span><span class="notify-msg" id="tnotify-${i}">${d.triage_notified_owner?'✉ emailed '+esc(d.triage_notified_owner)+' '+esc((d.triage_notified_at||'').slice(0,10)):''}</span>
             </div>
-            ${d.triage_decided_at?`<div class="triage-decided">Last saved ${d.triage_decided_at.slice(0,10)}${d.triage_decided_by?' by '+esc(d.triage_decided_by):''}</div>`:''}
+            ${d.triage_decided_at?`<div class="triage-decided">Decided ${esc(d.triage_decided_at.slice(0,10))}${d.triage_decided_by?' by '+esc(d.triage_decided_by):''}</div>`:''}
             <div class="comments-section">
               <div class="detail-label" style="margin-bottom:8px">Notes & comments</div>
               <div class="comments-list" id="clist-${i}"><div style="color:var(--dim);font-size:12px">Loading…</div></div>
               <div class="comment-input-row">
-                <input class="author-input" id="cauthor-${i}" placeholder="Your name" value="Kavan">
+                <input class="author-input" id="cauthor-${i}" placeholder="Your name" value="${esc(CURRENT_USER)}">
                 <input class="comment-input" id="cinput-${i}" placeholder="Add a note…" onkeydown="if(event.key==='Enter')addComment(${i},'${esc(d.project_hash)}')">
                 <button class="comment-send" onclick="addComment(${i},'${esc(d.project_hash)}')">Add</button>
               </div>
@@ -626,6 +689,25 @@ function findProj(hash){
   return DATA.find(x=>x.project_hash===hash)||DATA_NEW.find(x=>x.project_hash===hash);
 }
 
+function bdmFor(region){
+  return BDMS.find(b=>b.active!==0&&(b.regions||'').split(',').map(x=>x.trim().toUpperCase()).includes(region));
+}
+function ownerOptions(d){
+  const names=[...TEAM];
+  BDMS.filter(b=>b.active!==0).forEach(b=>{if(!names.includes(b.name)) names.push(b.name);});
+  if(d.triage_owner&&!names.includes(d.triage_owner)) names.push(d.triage_owner);
+  const sug=bdmFor(d.region||'');
+  return names.map(o=>`<option value="${esc(o)}" ${d.triage_owner===o?'selected':''}>${esc(o)}${BDMS.some(b=>b.name===o)?' (BDM'+(sug&&sug.name===o?', '+esc(d.region):'')+')':''}</option>`).join('');
+}
+function laneHint(d){
+  const sug=bdmFor(d.region||'');
+  const parts=[];
+  if(d.lane&&d.lane_suggested&&d.lane!=='pass') parts.push(`Suggested lane: <b>${esc(LANE_LABEL[d.lane]||d.lane)}</b>`);
+  if(sug) parts.push(`BDM for ${esc(d.region)}: <b>${esc(sug.name)}</b>`);
+  else if(d.region&&d.region!=='OTHER') parts.push(`No BDM set for ${esc(d.region)} yet (<a href="/settings">add one</a>)`);
+  return parts.length?`<div class="lane-hint">${parts.join(' · ')}</div>`:'';
+}
+
 function selectTriage(i, hash, key){
   triageSel[hash]=key;
   TRIAGE_OPTS.forEach(o=>{
@@ -645,7 +727,7 @@ function refreshRowChrome(i, d){
   const det=document.getElementById(`det${i}`);
   const tr=det?det.previousElementSibling:null;
   if(!tr) return;
-  tr.classList.remove('triaged-full','triaged-philip','triaged-pass');
+  tr.classList.remove('triaged-full','triaged-philip','triaged-bdm','triaged-pass');
   if(d.triage_decision) tr.classList.add('triaged-'+d.triage_decision);
 }
 
@@ -657,20 +739,28 @@ async function saveTriage(i, hash){
   const payload={
     decision,
     reason:      val('treason', d.triage_reason),
-    decided_by:  val('cauthor', '')||'Kavan',
+    decided_by:  CURRENT_USER||val('cauthor', ''),
     status:      val('tstatus', d.triage_status),
     owner:       val('towner',  d.triage_owner),
     next_steps:  val('tnext',   d.triage_next_steps),
     scope:       val('tscope',  d.triage_scope),
+    value:       val('tvalue',  d.triage_value),
+    outcome_reason: val('toutcome', d.triage_outcome_reason),
   };
   const s=document.getElementById(`tsaved-${i}`);
   try{
     const res=await fetch(`/api/triage/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(res.status===401){location.href='/login';return;}
     if(!res.ok) throw new Error('HTTP '+res.status);
+    const saved=await res.json().catch(()=>({}));
     Object.assign(d,{triage_decision:payload.decision,triage_reason:payload.reason,
       triage_status:payload.status,triage_owner:payload.owner,
-      triage_next_steps:payload.next_steps,triage_scope:payload.scope});
+      triage_next_steps:payload.next_steps,triage_scope:payload.scope,
+      triage_value:(saved.value!==undefined?saved.value:d.triage_value),triage_outcome_reason:payload.outcome_reason});
     if(s){s.textContent='✓ Saved';s.style.color='';s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}
+    if(saved.notified){const n=document.getElementById(`tnotify-${i}`); if(n) n.textContent='✉ '+saved.notified;
+      if(String(saved.notified).startsWith('emailed')) toast('✉ '+esc(saved.notified)+' about this lead');}
+    if(d.lane_suggested&&payload.decision){d.lane={full:'tender',philip:'philip',bdm:'bdm',pass:'pass'}[payload.decision]||d.lane;d.lane_suggested=false;}
     refreshRowChrome(i, d);  // recolour the row in place — no full re-render, open panels stay open
   }catch(e){
     if(s){s.textContent='✗ NOT saved — check connection, then click Save decision';s.style.color='var(--pass)';s.classList.add('show');}
@@ -695,8 +785,8 @@ async function loadComments(i, hash){
   }
   list.innerHTML=data.comments.map(c=>`
     <div class="comment-item">
-      <div class="comment-meta"><span><b>${esc(c.author)}</b> · ${c.created_at.slice(0,16).replace('T',' ')}</span>
-        <span class="del" onclick="deleteComment(${i},'${esc(hash)}',${c.id})">✕</span></div>
+      <div class="comment-meta"><span><b>${esc(c.author)}</b> · ${esc((c.created_at||'').slice(0,16).replace('T',' '))}</span>
+        <span class="del" onclick="deleteComment(${i},'${esc(hash)}',${+c.id})">✕</span></div>
       <div class="comment-body">${esc(c.body)}</div>
     </div>`).join('');
 }
@@ -705,7 +795,8 @@ async function addComment(i, hash){
   const input=document.getElementById(`cinput-${i}`);
   const body=input.value.trim();
   if(!body) return;
-  const author=document.getElementById(`cauthor-${i}`)?.value||'Kavan';
+  const author=document.getElementById(`cauthor-${i}`)?.value||CURRENT_USER||'';
+  if(!AUTH_ON&&author){ CURRENT_USER=author; try{ localStorage.setItem('vi_name',author); }catch(e){} }
   await fetch(`/api/comments/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body,author})});
   input.value='';
   // update comment count locally
@@ -803,14 +894,14 @@ async function mergeGroup(gi){
     (r.comments_moved?` · ${r.comments_moved} comment(s) carried over`:'')+
     (r.decision_adopted?' · decision kept':''),'', ()=>undoMerge(others));
   const el=document.getElementById('dg-'+gi); if(el) el.remove();
-  DATA=await loadData(showClosed); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); refreshBadges();
 }
 
 async function undoMerge(hashes){
   await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({hashes,hidden:false})});
   toast('Merge undone','warn');
-  DATA=await loadData(showClosed); renderDuplicates(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); renderDuplicates(); refreshBadges();
 }
 
 async function mergeAll(){
@@ -823,7 +914,7 @@ async function mergeAll(){
     if(r.ok) n+=r.merged;
   }
   toast(`Merged ${n} duplicate rows`);
-  DATA=await loadData(showClosed); renderDuplicates(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); renderDuplicates(); refreshBadges();
 }
 
 // ── Archive ───────────────────────────────────────────────────────────
@@ -844,7 +935,7 @@ async function renderArchive(){
     </div>
     <table><thead><tr><th>Tender / Customer</th><th>Why archived</th><th>Score</th><th>Reason given</th><th>Loc</th><th></th></tr></thead><tbody>
     ${A.map(p=>`<tr class="row">
-      <td class="pname">${p.source_url?`<a href="${esc(p.source_url)}" target="_blank">${esc(p.project_name)}</a>`:esc(p.project_name)}
+      <td class="pname">${safeUrl(p.source_url)?`<a href="${safeUrl(p.source_url)}" target="_blank" rel="noopener">${esc(p.project_name)}</a>`:esc(p.project_name)}
         <div class="cust">${esc(p.customer)}${p.comment_count?` <span class="comment-dot">💬${p.comment_count}</span>`:''}</div></td>
       <td><span class="arch-reason ar-${p.archive_reason}">${lbl[p.archive_reason]}</span></td>
       <td>${p.doability_score}</td>
@@ -858,18 +949,18 @@ async function restore(hash){
   await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({hashes:[hash],hidden:false})});
   toast('Restored to active list');
-  DATA=await loadData(showClosed); renderArchive(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); renderArchive(); refreshBadges();
 }
 
 async function hideRow(hash,name){
   await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({hashes:[hash],hidden:true})});
-  toast(`Hidden: ${name}`, 'warn', async()=>{
+  toast(`Hidden: ${esc(name)}`, 'warn', async()=>{
     await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({hashes:[hash],hidden:false})});
-    DATA=await loadData(showClosed); render(); refreshBadges(); toast('Restored');
+    DATA=await loadData(showClosed); syncNew(); render(); refreshBadges(); toast('Restored');
   });
-  DATA=await loadData(showClosed); render(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); render(); refreshBadges();
 }
 
 async function refreshBadges(){
@@ -885,7 +976,9 @@ document.getElementById('fVerdict').onchange=e=>{filt.verdict=e.target.value;ren
 document.getElementById('fAction').onchange=e=>{filt.action=e.target.value;render();};
 document.getElementById('fDeadline').onchange=e=>{filt.deadline=e.target.value;render();};
 document.getElementById('fTriage').onchange=e=>{filt.triage=e.target.value;render();};
+document.getElementById('fLane').onchange=e=>{filt.lane=e.target.value;render();};
 document.getElementById('fResearch').onchange=e=>{filt.research=e.target.value;render();};
+document.getElementById('fSource').onchange=e=>{filt.source=e.target.value;render();};
 document.getElementById('fSector').onchange=e=>{filt.sector=e.target.value;render();};
 document.getElementById('fLoc').onchange=e=>{filt.loc=e.target.value;render();};
 document.querySelectorAll('th').forEach(th=>th.onclick=()=>{

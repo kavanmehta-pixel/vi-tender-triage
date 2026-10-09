@@ -61,7 +61,7 @@ class Connection:
 
     def __init__(self):
         if USE_PG:
-            self._c = psycopg2.connect(DATABASE_URL)
+            self._c = psycopg2.connect(DATABASE_URL, connect_timeout=5)
         else:
             self._c = sqlite3.connect(DB_FILE)
             self._c.row_factory = sqlite3.Row
