@@ -9,6 +9,53 @@ tracks the triage decision through to outcome, and sends a Friday digest.
   `python3 -c "import ast,glob;[ast.parse(open(f).read(),feature_version=(3,11)) for f in glob.glob('*.py')]"`
 - **Tests:** `python -m unittest discover tests` (SQLite), or set `DATABASE_URL` to run them on Postgres.
 
+## Access (Oct 2026) - set these BEFORE deploying
+
+Every page and API now needs sign-in. Before 9 Oct 2026 everything was public.
+
+| Railway variable (web service) | What it does |
+|---|---|
+| `APP_PASSWORD` | team password. **Required**: with it unset nobody can sign in |
+| `SECRET_KEY` | long random string; signs the login cookie |
+| `API_TOKEN` | for scheduled jobs (Cowork digest/research): send header `X-API-Token` |
+| `INGEST_TOKEN` | the inbox poller's header `X-Ingest-Token`; unset = ingest refused |
+| `TEAM_NAMES` | optional, comma-separated names offered on the sign-in page |
+
+People sign in with their name and the team password, so decisions and comments are attributed.
+Links shared with someone new (e.g. Nick) need the password too.
+
+## Lanes, BDM allocation and the sales emails (9 Oct 2026 meeting)
+
+| Lane | Who | How it gets there |
+|---|---|---|
+| Tender / EOI | Kavan + Alister (with the BDM) | decision **Full tender**, or suggested when a tender/EOI has security in scope |
+| Demand gen | Philip | decision **Philip reach-out**, or suggested for a tender/EOI with no security scope |
+| BDM | local BDM | decision **Send to BDM** with the BDM as owner; major projects $10m+ by state |
+| Maybes | BDMs, monthly | untouched MAYBEs, by state |
+
+- **BDM directory:** `/settings`. Name, email and states for each BDM.
+- **Allocation email:** setting a lead's owner to someone in the directory emails them once, straight away
+  (cc `ALLOCATION_CC`). Logged at `/api/notifications`.
+- **Monday email:** preview at `/brief`; send a review copy (`BRIEF_REVIEW_TO`, e.g. Michael and Nick) or
+  send to all BDMs from `/settings`. Cron: `python send_digest.py --brief`.
+- **Monthly maybes:** preview at `/maybes`; one email per BDM's states. Cron: `python send_digest.py --maybes`.
+- **Project value** is read from the listing text (`$3.6bn`, `A$624m`, `NZ$800m`); most scraped rows don't state
+  one, so the $10m filter only sees projects whose value is published.
+
+## Data fixes (9 Oct 2026)
+
+- **New this week = All, filtered.** Both views come from one loader (`load_projects`), so decisions,
+  deadlines and counts can't disagree. Previously New used a separate query with no triage join, so a
+  decision made in All didn't show in New (and autosave from New could blank its reason).
+- **Closing dates.** The parser used to take *any* date in the text as the closing date (approval dates,
+  award dates, "verified 8 Oct 2026"), which hid ~450 live rows as closed. Dates now count only next to a
+  closing keyword, and open/closed is worked out when the page loads, not frozen at upload.
+  `/admin/repair` previews and saves the corrected dates (old value kept in `closing_date_prev`).
+- **Merges keep every decision.** If both rows had a decision, the dropped one is kept as a comment.
+  `/admin/repair` also fixes decisions already stranded on merged rows.
+- **Backups:** `/api/export` downloads every decision, comment, BDM and email log as JSON. Take one weekly
+  until Railway Postgres backups are confirmed on.
+
 ## Where tenders come from
 
 Every tender row carries a **source tag**:
@@ -73,8 +120,7 @@ scope it to the one mailbox with an Exchange *application access policy* so it c
 An IMAP fallback exists (`IMAP_HOST`, `IMAP_USER`, `IMAP_PASSWORD`, `IMAP_FOLDER`) if tenders@ ever
 lives somewhere other than Microsoft 365.
 
-Set `INGEST_TOKEN` on the web service as well, so only the poller (or a Power Automate flow) can call
-`/api/ingest/email`. **No portal credentials, mailbox secrets or tokens are ever committed** — all of
+Set `INGEST_TOKEN` on the web service as well; without it `/api/ingest/email` refuses everything. **No portal credentials, mailbox secrets or tokens are ever committed** — all of
 them live in Railway variables.
 
 How Michael and Alister route alerts to tenders@ (and the later cut-over of portal registrations):

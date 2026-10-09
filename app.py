@@ -1,10 +1,14 @@
 import os, json, csv, io, re, sqlite3, hashlib, secrets
 from datetime import datetime, timedelta, date
-from flask import Flask, request, jsonify, render_template, g
+from flask import Flask, request, jsonify, render_template, g, session
 import db as dbx
 import email_ingest
+import routing
 
 app = Flask(__name__)
+import auth
+from auth import current_user
+auth.init(app)
 DB_PATH = dbx.location()
 
 EPHEMERAL_DB = dbx.is_ephemeral()
@@ -117,8 +121,9 @@ def init_db():
         dbx.add_column(db, "projects", _c, _t)
     try:
         db.execute("CREATE INDEX IF NOT EXISTS idx_dup_key ON projects(dup_key)")
+        db.commit()
     except Exception:
-        pass
+        db.rollback()
     try:
         db.execute("""CREATE TABLE IF NOT EXISTS triage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,6 +155,7 @@ def init_db():
                          ("scope","TEXT"),("status_updated_at","TEXT")]:
         dbx.add_column(db, "triage", col, coltype)
     migrate_sources_and_outcomes(db)
+    migrate_oct9(db)
     db.commit()
     db.close()
 
@@ -192,6 +198,51 @@ def migrate_sources_and_outcomes(db):
         db.rollback()
 
 
+def migrate_oct9(db):
+    """9 Oct 2026, additive only: BDM directory, allocation-email log, and new
+    est_value / region / closing_date_prev columns. Existing values are never
+    rewritten on boot; data repairs run from /admin/repair after a preview."""
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS bdms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        email TEXT,
+        regions TEXT,
+        active INTEGER DEFAULT 1,
+        created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_hash TEXT,
+        kind TEXT,
+        recipient TEXT,
+        sent_at TEXT,
+        ok INTEGER,
+        detail TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_notifications_hash ON notifications(project_hash);
+    """)
+    for col, coltype in [("est_value", "REAL"), ("region", "TEXT"), ("closing_date_prev", "TEXT")]:
+        dbx.add_column(db, "projects", col, coltype)
+    for col, coltype in [("notified_owner", "TEXT"), ("notified_at", "TEXT")]:
+        dbx.add_column(db, "triage", col, coltype)
+    try:
+        # fill the two NEW columns where empty (nothing existing is overwritten)
+        rows = db.execute("""SELECT project_hash, project_name, location, stage, notes, signal_summary
+                             FROM projects WHERE region IS NULL OR region = ''""").fetchall()
+        for r in rows:
+            r = dict(r)
+            db.execute("UPDATE projects SET est_value=?, region=? WHERE project_hash=?",
+                       (routing.est_value(r.get("project_name"), r.get("signal_summary"),
+                                          r.get("notes"), r.get("stage")),
+                        routing.region_of(r.get("location"), r.get("signal_summary")),
+                        r["project_hash"]))
+        db.commit()
+    except Exception:
+        db.rollback()
+        app.logger.exception("est_value/region fill failed")
+
+
 # ─── Date Parser ────────────────────────────────────────────────────────
 
 MONTH_MAP = {
@@ -202,32 +253,57 @@ MONTH_MAP = {
     'november': 11, 'december': 12,
 }
 
+_MON = (r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+        r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+# A date only counts as the closing date when it is tied to a closing keyword.
+# The old "any date in the text" fallback picked up approval, award and
+# scrape-verified dates ("approved 11 Jun 2025", "verified 8 Oct 2026") and
+# hid hundreds of live rows as closed.
+_CLOSE_KW = (r"(?:clos(?:e[sd]?|ing)(?:\s+date)?|due|deadline|submissions?\s+(?:close|due)|"
+             r"responses?\s+due|(?:remain\s+)?open\s+until|until)")
+_GAP = r"[^;\n|.]{0,30}?"
+_P_DMY = re.compile(_CLOSE_KW + _GAP + r"(\d{1,2})(?:st|nd|rd|th)?\s+" + _MON + r",?\s+(\d{4})")
+_P_ISO = re.compile(_CLOSE_KW + _GAP + r"(20\d\d)-(\d\d)-(\d\d)")
+_P_NUM = re.compile(_CLOSE_KW + _GAP + r"(\d{1,2})/(\d{1,2})/(20\d\d)")
+_P_MY = re.compile(r"(?:open\s+until|until)\s+" + _MON + r"\s+(\d{4})")
+
+
 def extract_closing_date(stage_text):
-    """Extract closing date from stage field text. Returns ISO date string or None."""
+    """Closing date from stage/notes text, or None. ISO string."""
     if not stage_text:
         return None
-    text = stage_text.lower()
+    t = stage_text.lower()
+    found = []
+    for m in _P_DMY.finditer(t):
+        try:
+            found.append(date(int(m.group(3)), MONTH_MAP[m.group(2)[:3]], int(m.group(1))))
+        except Exception:
+            pass
+    for m in _P_ISO.finditer(t):
+        try:
+            found.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        except Exception:
+            pass
+    for m in _P_NUM.finditer(t):
+        try:
+            found.append(date(int(m.group(3)), int(m.group(2)), int(m.group(1))))
+        except Exception:
+            pass
+    if not found:   # "EOIs remain open until June 2027" -> end of that month
+        import calendar
+        for m in _P_MY.finditer(t):
+            y, mo = int(m.group(2)), MONTH_MAP[m.group(1)[:3]]
+            found.append(date(y, mo, calendar.monthrange(y, mo)[1]))
+    found = [d for d in found if 2025 <= d.year <= 2031]
+    return found[0].isoformat() if found else None
 
-    # Priority: look near close/closing/deadline keywords first
-    patterns = [
-        # "closes 14 Jul 2026", "closing 9 July 2026", "close 20 July 2026"
-        r'clos(?:e[sd]?|ing)[^;\n]{0,40}?(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})',
-        # "due 14 Jul 2026"
-        r'due[^;\n]{0,20}?(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})',
-        # Fallback: any "14 Jul 2026" style date
-        r'(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})',
-    ]
 
-    for pat in patterns:
-        matches = re.findall(pat, text)
-        for m in matches:
-            try:
-                d, mon, yr = int(m[0]), MONTH_MAP.get(m[1][:3]), int(m[2])
-                if mon and 2025 <= yr <= 2030 and 1 <= d <= 31:
-                    return date(yr, mon, d).isoformat()
-            except Exception:
-                continue
-    return None
+def valid_iso_date(s):
+    """Accept only YYYY-MM-DD (closing dates are rendered into HTML)."""
+    try:
+        return date.fromisoformat(str(s or "").strip()[:10]).isoformat()
+    except Exception:
+        return None
 
 
 def deadline_status(closing_date_str):
@@ -679,12 +755,12 @@ def upsert_tender(db, row, source, run_id=None, alert_message_id=None):
                       url_norm=COALESCE(NULLIF(url_norm,''), ?), closing_date=COALESCE(NULLIF(closing_date,''), ?)
                       WHERE project_hash=?""",
                    (_add_via(hit.get("seen_via"), source), now, portal, ref, url_norm,
-                    row.get("closing_date") or None, hit["project_hash"]))
+                    valid_iso_date(row.get("closing_date")), hit["project_hash"]))
         return "matched", hit["project_hash"]
 
     scores = score_project(row)
     location_flag = apply_location(scores, row)
-    closing_date = row.get("closing_date") or extract_closing_date(
+    closing_date = valid_iso_date(row.get("closing_date")) or extract_closing_date(
         (row.get("stage", "") or "") + " " + (row.get("signal_summary", "") or ""))
     is_closed = 1 if deadline_status(closing_date) == "closed" else 0
     h = make_hash(row)
@@ -781,6 +857,11 @@ def ingest_projects(csv_text, run_id, db):
     new_count = 0
     total = 0
     new_for_summary = []  # collect new projects needing AI summary
+    # One query up front instead of one per row: each Postgres round trip on
+    # Railway costs milliseconds, and ~1,400 per-row lookups ran past gunicorn's
+    # timeout (the upload page then got an HTML error instead of JSON).
+    known = {r["project_hash"]: dict(r) for r in db.execute(
+        "SELECT project_hash, id, first_seen_at, ai_summary, seen_via FROM projects").fetchall()}
 
     for row in reader:
         if row.get("active", "").lower() != "true":
@@ -800,15 +881,18 @@ def ingest_projects(csv_text, run_id, db):
         closing_date = extract_closing_date(stage_text)
         ds = deadline_status(closing_date)
         is_closed = 1 if ds == 'closed' else 0
+        value_est = routing.est_value(row.get("project_name"), row.get("signal_summary"),
+                                      row.get("notes"), row.get("stage"))
+        region = routing.region_of(row.get("location"), row.get("signal_summary"))
 
-        existing = db.execute("SELECT id, first_seen_at, ai_summary, seen_via FROM projects WHERE project_hash = ?", (h,)).fetchone()
+        existing = known.get(h)
         if not existing:
             # Not seen by the scrape before - but an email alert or a manual entry
             # may already have created it. Adopt that row rather than duplicate it.
             prior = find_existing(db, portal, portal_ref, url_norm, dk, exclude_via="scrape")
             if prior:
                 h = prior["project_hash"]
-                existing = db.execute("SELECT id, first_seen_at, ai_summary, seen_via FROM projects WHERE project_hash = ?", (h,)).fetchone()
+                existing = known.get(h) or prior
                 # take the scrape's richer descriptive fields on the adopted row
                 db.execute("""UPDATE projects SET project_name=?, customer=COALESCE(NULLIF(?,''), customer),
                               location=COALESCE(NULLIF(?,''), location), asset_type=?, sector=?, year=?,
@@ -835,7 +919,7 @@ def ingest_projects(csv_text, run_id, db):
                 stage=?, opportunity_type=?, priority_score=?, signal_summary=?, notes=?, active=?,
                 closing_date=COALESCE(?, closing_date), is_closed=?, location_flag=?, confidence=?, why_fit=?, dup_key=?,
                 seen_via=?, portal=COALESCE(NULLIF(portal,''), ?), portal_ref=COALESCE(NULLIF(portal_ref,''), ?),
-                url_norm=COALESCE(NULLIF(url_norm,''), ?)
+                url_norm=COALESCE(NULLIF(url_norm,''), ?), est_value=?, region=?
                 WHERE project_hash=?""",
                 (scores["doability_score"], scores["verdict"], scores["action_bucket"],
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
@@ -845,9 +929,10 @@ def ingest_projects(csv_text, run_id, db):
                  row.get("notes",""), row.get("active",""),
                  closing_date or None, is_closed, location_flag,
                  scores.get("confidence"), scores.get("why"), dk,
-                 _add_via(existing["seen_via"], "scrape"), portal, portal_ref, url_norm, h))
+                 _add_via(existing.get("seen_via"), "scrape"), portal, portal_ref, url_norm,
+                 value_est, region, h))
             # Regenerate summary if score changed significantly or no summary yet
-            if not existing["ai_summary"]:
+            if not existing.get("ai_summary"):
                 new_for_summary.append((h, proj_data))
         else:
             new_count += 1
@@ -859,8 +944,8 @@ def ingest_projects(csv_text, run_id, db):
                  doability_score, verdict, action_bucket, moats, moat_count,
                  risk_flags, commodity, first_seen_at, last_seen_at, run_id,
                  closing_date, is_closed, location_flag, confidence, why_fit, dup_key,
-                 source, seen_via, portal, portal_ref, url_norm)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 source, seen_via, portal, portal_ref, url_norm, est_value, region)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (h, vals["project_name"], vals["customer"], vals["location"],
                  vals["asset_type"], vals["sector"], vals["stage"], vals["year"],
                  vals["source_url"], vals["socI_relevance"], vals["opportunity_type"],
@@ -869,7 +954,8 @@ def ingest_projects(csv_text, run_id, db):
                  scores["moats"], scores["moat_count"], scores["risk_flags"], scores["commodity"],
                  now, now, run_id, closing_date, is_closed, location_flag,
                  scores.get("confidence"), scores.get("why"), dk,
-                 "scrape", "scrape", portal, portal_ref, url_norm))
+                 "scrape", "scrape", portal, portal_ref, url_norm, value_est, region))
+            known[h] = {"project_hash": h, "first_seen_at": now, "ai_summary": None, "seen_via": "scrape"}
             new_for_summary.append((h, proj_data))
 
     db.commit()
@@ -961,8 +1047,10 @@ def save_triage(project_hash):
         return cur.get(key) or ""
 
     decision = pick("decision")
+    if decision not in ("", "full", "philip", "bdm", "pass"):
+        return jsonify({"ok": False, "error": "unknown decision"}), 400
     reason = pick("reason")
-    decided_by = pick("decided_by")
+    decided_by = pick("decided_by") or current_user() or ""
     status = pick("status")
     owner = pick("owner")
     next_steps = pick("next_steps")
@@ -978,6 +1066,8 @@ def save_triage(project_hash):
         outcome_at = now
     if status not in ("Won", "Lost"):
         outcome_at = ""
+    # decided_at means "when the decision was made", not "last autosave"
+    decided_at = cur.get("decided_at") if (existing and cur.get("decision") == decision) else now
     try:
         db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at, status, owner, next_steps, scope, status_updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -987,26 +1077,28 @@ def save_triage(project_hash):
             status=excluded.status, owner=excluded.owner,
             next_steps=excluded.next_steps, scope=excluded.scope,
             status_updated_at=excluded.status_updated_at""",
-            (project_hash, decision, reason, decided_by, now, status, owner, next_steps, scope, now))
+            (project_hash, decision, reason, decided_by, decided_at, status, owner, next_steps, scope, now))
         db.execute("""UPDATE triage SET value=?, outcome_reason=?, submitted_at=?, outcome_at=?
                       WHERE project_hash=?""",
                    (value, outcome_reason, submitted_at or None, outcome_at or None, project_hash))
         db.commit()
-    except Exception as e:
+    except Exception:
         try:
             db.rollback()
         except Exception:
             pass
-        return jsonify({"ok": False, "error": str(e)}), 500
-    return jsonify({"ok": True, "decided_at": now, "value": value,
+        app.logger.exception("save_triage failed")
+        return jsonify({"ok": False, "error": "could not save - try again"}), 500
+    notified = maybe_notify_owner(db, project_hash, owner, cur.get("owner") or "")
+    return jsonify({"ok": True, "decided_at": decided_at, "value": value, "notified": notified,
                     "submitted_at": submitted_at or None, "outcome_at": outcome_at or None})
 
 @app.route("/api/comments/<project_hash>", methods=["POST"])
 def add_comment(project_hash):
     db = get_db()
-    data = request.json
-    body = data.get("body", "").strip()
-    author = data.get("author", "").strip() or "Kavan"
+    data = request.get_json(silent=True) or {}
+    body = str(data.get("body", "")).strip()[:5000]
+    author = str(data.get("author", "")).strip()[:80] or current_user() or "team"
     if not body:
         return jsonify({"ok": False, "error": "empty"}), 400
     now = datetime.utcnow().isoformat()
@@ -1018,7 +1110,7 @@ def add_comment(project_hash):
 @app.route("/api/comments/<project_hash>", methods=["DELETE"])
 def delete_comment(project_hash):
     db = get_db()
-    comment_id = request.json.get("id")
+    comment_id = (request.get_json(silent=True) or {}).get("id")
     db.execute("DELETE FROM comments WHERE id=? AND project_hash=?", (comment_id, project_hash))
     db.commit()
     return jsonify({"ok": True})
@@ -1036,15 +1128,13 @@ def digest_preview():
 @app.route("/api/digest/send", methods=["POST"])
 def digest_send():
     """Manual trigger (the Friday cron runs send_digest.py instead).
-    Protected by DIGEST_TOKEN when set."""
-    token = os.environ.get("DIGEST_TOKEN", "")
-    if token and request.headers.get("X-Digest-Token", "") != token:
-        return jsonify({"ok": False, "error": "bad token"}), 403
+    Requires sign-in or X-API-Token (see auth.py)."""
     db = get_db()
     try:
         ok, detail = digest_mod.send(db)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        app.logger.exception("request failed")
+        return jsonify({"ok": False, "error": "server error - check Railway logs"}), 500
     return jsonify({"ok": ok, "detail": detail}), (200 if ok else 500)
 
 
@@ -1053,6 +1143,8 @@ def triage_summary():
     db = get_db()
     rows = db.execute("""
         SELECT t.decision, COUNT(*) as n FROM triage t
+        JOIN projects p ON p.project_hash = t.project_hash
+        WHERE p.merged_into IS NULL AND (p.hidden = 0 OR p.hidden IS NULL)
         GROUP BY t.decision
     """).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -1063,26 +1155,26 @@ def api_research_queue():
     """Tenders worth researching: open, actionable, and either strong enough to
     pursue or too thinly described to judge. This is the weekly Cowork input."""
     db = get_db()
-    limit = int(request.args.get("limit", 40))
+    try:
+        limit = max(1, min(int(request.args.get("limit", 40)), 200))
+    except ValueError:
+        limit = 40
     only_unresearched = request.args.get("unresearched", "1") == "1"
-    where = """WHERE p.active='true' AND (p.hidden=0 OR p.hidden IS NULL) AND p.merged_into IS NULL
-               AND (p.is_closed=0 OR p.is_closed IS NULL)
-               AND p.verdict IN ('GO','NEEDS DOC','MAYBE')
-               AND p.action_bucket IN ('ACT NOW','BD PLAY')"""
-    if only_unresearched:
-        where += " AND (p.research_status IS NULL OR p.research_status='')"
-    rows = db.execute(f"""
-        SELECT p.project_hash, p.project_name, p.customer, p.location, p.sector,
-               p.source_url, p.opportunity_type, p.stage, p.closing_date,
-               p.doability_score, p.verdict, p.confidence, p.moats, p.risk_flags,
-               p.signal_summary, p.action_bucket
-        FROM projects p {where}
-        ORDER BY
-            CASE p.verdict WHEN 'GO' THEN 0 WHEN 'NEEDS DOC' THEN 1 ELSE 2 END,
-            p.doability_score DESC
-        LIMIT {limit}
-    """).fetchall()
-    return jsonify([dict(r) for r in rows])
+    order = {"GO": 0, "NEEDS DOC": 1}
+    out = []
+    for d in load_projects(db, hide_closed=True):
+        if d.get("verdict") not in ("GO", "NEEDS DOC", "MAYBE"):
+            continue
+        if d.get("action_bucket") not in ("ACT NOW", "BD PLAY"):
+            continue
+        if only_unresearched and d.get("research_status"):
+            continue
+        out.append(d)
+    out.sort(key=lambda d: (order.get(d.get("verdict"), 2), -(d.get("doability_score") or 0)))
+    keys = ("project_hash", "project_name", "customer", "location", "sector", "source_url",
+            "opportunity_type", "stage", "closing_date", "doability_score", "verdict", "confidence",
+            "moats", "risk_flags", "signal_summary", "action_bucket")
+    return jsonify([{k: d.get(k) for k in keys} for d in out[:limit]])
 
 
 @app.route("/api/research", methods=["POST"])
@@ -1106,9 +1198,12 @@ def api_research():
                            ("verified_scope","verified_scope"), ("portal_url","portal_url"),
                            ("contact_info","contact_info"), ("ai_summary","ai_summary")):
             if it.get(field):
-                sets.append(f"{col}=?"); vals.append(it[field])
+                v = it[field]
+                if col == "portal_url" and not re.match(r"https?://", str(v), re.I):
+                    continue
+                sets.append(f"{col}=?"); vals.append(str(v)[:4000])
         # a verified closing date also refreshes the open/closed state
-        cd = it.get("verified_closing_date") or it.get("closing_date")
+        cd = valid_iso_date(it.get("verified_closing_date") or it.get("closing_date"))
         if cd:
             sets.append("closing_date=?"); vals.append(cd)
             sets.append("is_closed=?"); vals.append(1 if deadline_status(cd) == "closed" else 0)
@@ -1143,7 +1238,7 @@ def api_duplicates():
     """).fetchall()
     groups = {}
     for r in rows:
-        groups.setdefault(r["dup_key"], []).append(dict(r))
+        groups.setdefault(r["dup_key"], []).append(enrich(dict(r)))
     out = []
     for k, members in groups.items():
         if len(members) < 2:
@@ -1154,7 +1249,6 @@ def api_duplicates():
         if not include_closed:
             members = open_members
         for m in members:
-            m["deadline_status"] = deadline_status(m.get("closing_date"))
             m["source_domain"] = re.sub(r"^https?://(www\.)?([^/]+).*$", r"\2", m.get("source_url") or "")
         # suggest the richest row as canonical: has a decision, then most detail
         members.sort(key=lambda m: (
@@ -1179,26 +1273,38 @@ def api_merge():
     others = [h for h in (data.get("others") or []) if h != canonical]
     if not canonical or not others:
         return jsonify({"ok": False, "error": "need canonical and others"}), 400
+    if not db.execute("SELECT 1 FROM projects WHERE project_hash=? AND merged_into IS NULL",
+                      (canonical,)).fetchone():
+        return jsonify({"ok": False, "error": "canonical row not found or already merged"}), 400
     now = datetime.utcnow().isoformat()
+    who = current_user()
     moved_comments = 0
     adopted = None
+    cols = ["decision", "reason", "decided_by", "decided_at", "status", "owner", "next_steps",
+            "scope", "status_updated_at", "value", "outcome_reason", "submitted_at", "outcome_at"]
     existing = db.execute("SELECT decision FROM triage WHERE project_hash=?", (canonical,)).fetchone()
+    has_decision = bool(existing and existing["decision"])
     for h in others:
-        # carry comments over
         cur = db.execute("UPDATE comments SET project_hash=? WHERE project_hash=?", (canonical, h))
         moved_comments += cur.rowcount or 0
-        # adopt a decision only if the canonical row does not already have one
-        if not (existing and existing["decision"]):
-            t = db.execute("SELECT * FROM triage WHERE project_hash=? AND decision IS NOT NULL AND decision!=''", (h,)).fetchone()
-            if t and not adopted:
-                db.execute("""INSERT INTO triage (project_hash,decision,reason,decided_by,decided_at,status,owner,next_steps,scope,status_updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(project_hash) DO UPDATE SET decision=excluded.decision, reason=excluded.reason,
-                    decided_by=excluded.decided_by, decided_at=excluded.decided_at, status=excluded.status,
-                    owner=excluded.owner, next_steps=excluded.next_steps, scope=excluded.scope""",
-                    (canonical, t["decision"], t["reason"], t["decided_by"], t["decided_at"],
-                     t["status"], t["owner"], t["next_steps"], t["scope"], now))
-                adopted = t["decision"]
+        t = db.execute("SELECT * FROM triage WHERE project_hash=? AND decision IS NOT NULL AND decision!=''",
+                       (h,)).fetchone()
+        if t:
+            t = dict(t)
+            if not has_decision:
+                # canonical had no decision: it takes this one, every field of it
+                db.execute("DELETE FROM triage WHERE project_hash=?", (canonical,))
+                db.execute(f"INSERT INTO triage (project_hash, {', '.join(cols)}) VALUES (?{', ?' * len(cols)})",
+                           [canonical] + [t.get(c) for c in cols])
+                has_decision, adopted = True, t["decision"]
+            else:
+                # keep the canonical decision; record the other so nothing is silently dropped
+                note = (f"[merged duplicate] had decision: {t['decision']}"
+                        + (f"; status: {t['status']}" if t.get("status") else "")
+                        + (f"; owner: {t['owner']}" if t.get("owner") else "")
+                        + (f"; reason: {t['reason']}" if t.get("reason") else ""))
+                db.execute("INSERT INTO comments (project_hash, author, body, created_at) VALUES (?,?,?,?)",
+                           (canonical, who or "system", note, now))
         db.execute("UPDATE projects SET merged_into=?, hidden=1 WHERE project_hash=?", (canonical, h))
     db.commit()
     return jsonify({"ok": True, "merged": len(others),
@@ -1234,8 +1340,7 @@ def api_archive():
     """).fetchall()
     out = []
     for r in rows:
-        d = dict(r)
-        d["deadline_status"] = deadline_status(d.get("closing_date"))
+        d = enrich(dict(r))
         d["archive_reason"] = ("merged" if d.get("merged_into") else
                                "passed" if d.get("triage_decision") == "pass" else "hidden")
         out.append(d)
@@ -1254,18 +1359,21 @@ def api_pipeline():
                t.decision, t.reason, t.status, t.owner, t.next_steps, t.scope,
                t.decided_by, t.decided_at, t.status_updated_at,
                t.value, t.outcome_reason, t.submitted_at, t.outcome_at,
-               p.source, p.seen_via, p.portal, p.portal_ref
+               p.source, p.seen_via, p.portal, p.portal_ref, p.stage, p.notes,
+               p.researched_at, p.est_value, p.region, p.signal_summary
         FROM triage t
         JOIN projects p ON p.project_hash = t.project_hash
         WHERE t.decision IS NOT NULL AND t.decision != ''
+          AND p.merged_into IS NULL AND (p.hidden = 0 OR p.hidden IS NULL)
         ORDER BY
-            CASE t.decision WHEN 'full' THEN 0 WHEN 'philip' THEN 1 ELSE 2 END,
+            CASE t.decision WHEN 'full' THEN 0 WHEN 'philip' THEN 1 WHEN 'bdm' THEN 2 ELSE 3 END,
             p.doability_score DESC
     """).fetchall()
     result = []
     for r in rows:
-        d = dict(r)
-        d["deadline_status"] = deadline_status(d.get("closing_date"))
+        d = enrich(dict(r))
+        for k in ("stage", "notes", "researched_at", "signal_summary"):
+            d.pop(k, None)
         result.append(d)
     # Attach notes/comments so the pipeline view shows the context under each tender
     hashes = [d["project_hash"] for d in result]
@@ -1312,16 +1420,42 @@ def dashboard():
     return render_template("dashboard.html")
 
 
-@app.route("/api/projects")
-def api_projects():
-    db = get_db()
-    hide_closed = request.args.get("hide_closed", "1") == "1"
-    where = "WHERE p.active = 'true' AND (p.hidden = 0 OR p.hidden IS NULL) AND p.merged_into IS NULL"
-    if hide_closed:
-        where += " AND (p.is_closed = 0 OR p.is_closed IS NULL)"
+VISIBLE_WHERE = ("p.active = 'true' AND (p.hidden = 0 OR p.hidden IS NULL) "
+                 "AND p.merged_into IS NULL")
+
+
+def effective_closing(d):
+    """Closing date to trust for a row. Scrape rows are re-read from their text with
+    the keyword-anchored parser, so dates stored by the old parser (approval,
+    award or 'verified' dates) no longer hide live tenders. Researched, alert and
+    manual dates are taken as stored."""
+    if (d.get("source") in (None, "", "scrape")) and not d.get("researched_at"):
+        return extract_closing_date((d.get("stage") or "") + " " + (d.get("notes") or ""))
+    return valid_iso_date(d.get("closing_date"))
+
+
+def enrich(d, cutoff=None):
+    """Derived fields every view uses, computed in one place so All, New this
+    week, the KPI cards, the digest and the BDM brief always agree."""
+    cd = effective_closing(d)
+    d["closing_date"] = cd
+    d["deadline_status"] = deadline_status(cd)
+    d["is_closed"] = 1 if d["deadline_status"] == "closed" else 0
+    if cutoff is not None:
+        d["is_new"] = 1 if (d.get("first_seen_at") or "") > cutoff else 0
+    if d.get("est_value") is None:
+        d["est_value"] = routing.est_value(d.get("project_name"), d.get("signal_summary"),
+                                           d.get("notes"), d.get("stage"))
+    d["region"] = d.get("region") or routing.region_of(d.get("location"), d.get("signal_summary"))
+    lane, suggested = routing.lane_of(d)
+    d["lane"], d["lane_suggested"] = lane, suggested
+    return d
+
+
+def load_projects(db, hide_closed=True, only_new=False):
+    cutoff = _new_cutoff(db)
     rows = db.execute(f"""
         SELECT p.*,
-            CASE WHEN p.first_seen_at >= ? THEN 1 ELSE 0 END as is_new,
             t.decision as triage_decision,
             t.reason as triage_reason,
             t.decided_by as triage_decided_by,
@@ -1332,43 +1466,53 @@ def api_projects():
             t.scope as triage_scope,
             t.value as triage_value,
             t.outcome_reason as triage_outcome_reason,
-            p.research_status, p.research_notes, p.verified_scope,
-            p.portal_url, p.contact_info, p.researched_at,
+            t.notified_owner as triage_notified_owner,
+            t.notified_at as triage_notified_at,
             (SELECT COUNT(*) FROM comments c WHERE c.project_hash = p.project_hash) as comment_count
         FROM projects p
         LEFT JOIN triage t ON t.project_hash = p.project_hash
-        {where}
+        WHERE {VISIBLE_WHERE}
         ORDER BY p.doability_score DESC
-    """, (_new_cutoff(db),)).fetchall()
-    result = []
+    """).fetchall()
+    out = []
     for r in rows:
-        d = dict(r)
-        d["deadline_status"] = deadline_status(d.get("closing_date"))
-        result.append(d)
-    return jsonify(result)
+        d = enrich(dict(r), cutoff)
+        if hide_closed and d["is_closed"]:
+            continue
+        if only_new and not d["is_new"]:
+            continue
+        out.append(d)
+    return out
+
+
+@app.route("/api/projects")
+def api_projects():
+    db = get_db()
+    hide_closed = request.args.get("hide_closed", "1") == "1"
+    return jsonify(load_projects(db, hide_closed=hide_closed))
+
 
 def _new_cutoff(db):
-    """'New' = first seen since the latest weekly run started, or in the last
-    7 days, whichever is earlier (so alerts between runs count as new)."""
-    week = (datetime.utcnow() - timedelta(days=7)).isoformat()
-    latest = db.execute("SELECT created_at FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
-    return min(latest["created_at"], week) if latest else week
+    """'New this week' = first seen after the previous weekly upload session.
+    One session can be several uploads (the a and b CSVs, a retry), so runs
+    within 12 hours of the latest are treated as the same session. Email alerts
+    that arrive between sessions count as new too."""
+    runs = [r["created_at"] for r in db.execute(
+        "SELECT created_at FROM runs ORDER BY created_at DESC LIMIT 50").fetchall()]
+    if not runs:
+        return (datetime.utcnow() - timedelta(days=7)).isoformat()
+    latest = datetime.fromisoformat(runs[0][:26])
+    session_start = latest - timedelta(hours=12)
+    earlier = [r for r in runs if datetime.fromisoformat(r[:26]) < session_start]
+    return earlier[0] if earlier else "0000"
 
 
 @app.route("/api/projects/new")
 def api_new_projects():
+    """Same rows and fields as /api/projects, limited to new this week."""
     db = get_db()
-    # first_seen_at never changes after insert, so this survives the a+b CSVs
-    # re-touching the same rows in one upload, and also catches email alerts
-    # that land between weekly runs.
-    cutoff = _new_cutoff(db)
-    rows = db.execute("""
-        SELECT * FROM projects
-        WHERE first_seen_at >= ? AND active = 'true'
-          AND (hidden = 0 OR hidden IS NULL) AND merged_into IS NULL
-        ORDER BY doability_score DESC
-    """, (cutoff,)).fetchall()
-    return jsonify([dict(r) for r in rows])
+    hide_closed = request.args.get("hide_closed", "1") == "1"
+    return jsonify(load_projects(db, hide_closed=hide_closed, only_new=True))
 
 
 @app.route("/api/contacts")
@@ -1410,16 +1554,18 @@ def api_health():
 
 @app.route("/api/stats")
 def api_stats():
+    """Counted over the same rows the dashboard shows (visible, open)."""
     db = get_db()
-    total = db.execute("SELECT COUNT(*) as n FROM projects WHERE active='true'").fetchone()["n"]
-    go = db.execute("SELECT COUNT(*) as n FROM projects WHERE active='true' AND verdict='GO'").fetchone()["n"]
-    maybe = db.execute("SELECT COUNT(*) as n FROM projects WHERE active='true' AND verdict='MAYBE'").fetchone()["n"]
-    pas = db.execute("SELECT COUNT(*) as n FROM projects WHERE active='true' AND verdict='PASS'").fetchone()["n"]
-    commodity = db.execute("SELECT COUNT(*) as n FROM projects WHERE active='true' AND commodity='yes'").fetchone()["n"]
+    rows = load_projects(db, hide_closed=True)
+    verdicts = {}
+    for d in rows:
+        verdicts[d.get("verdict") or ""] = verdicts.get(d.get("verdict") or "", 0) + 1
     latest = db.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
     return jsonify({
-        "total": total, "go": go, "maybe": maybe, "pass": pas,
-        "commodity": commodity,
+        "total": len(rows), "go": verdicts.get("GO", 0), "maybe": verdicts.get("MAYBE", 0),
+        "needs_doc": verdicts.get("NEEDS DOC", 0), "pass": verdicts.get("PASS", 0),
+        "commodity": sum(1 for d in rows if d.get("commodity") == "yes"),
+        "new_this_week": sum(1 for d in rows if d.get("is_new")),
         "latest_run": dict(latest) if latest else None,
     })
 
@@ -1465,6 +1611,322 @@ def api_upload():
     return jsonify(results)
 
 
+# ─── BDM directory, allocation emails, Monday brief, monthly maybes ─────
+# 9 Oct 2026 tenders meeting. See routing.py for the lanes and brief.py for the emails.
+import threading
+import brief as brief_mod
+
+
+def _env_list(name):
+    return [x.strip() for x in os.environ.get(name, "").split(",") if x.strip()]
+
+
+def list_bdms(db, active_only=True):
+    rows = db.execute("SELECT * FROM bdms" + (" WHERE active=1" if active_only else "")
+                      + " ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+def _bdm_by_owner(db, owner):
+    o = (owner or "").strip().lower()
+    if not o:
+        return None
+    for b in list_bdms(db):
+        if (b.get("name") or "").strip().lower() == o or (b.get("email") or "").strip().lower() == o:
+            return b
+    return None
+
+
+def _log_notification(h, kind, recipient, ok, detail):
+    conn = dbx.connect()
+    try:
+        conn.execute("INSERT INTO notifications (project_hash, kind, recipient, sent_at, ok, detail) VALUES (?,?,?,?,?,?)",
+                     (h, kind, recipient, datetime.utcnow().isoformat(), 1 if ok else 0, str(detail)[:500]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def maybe_notify_owner(db, project_hash, owner, prev_owner):
+    """Michael: 'when you allocate it, it automatically sends an email to the rep -
+    this one's come in your region, investigate, have a chat'. Fires once per new
+    owner, only for people in the BDM directory. Returns a short status string."""
+    if not owner or owner.strip().lower() == (prev_owner or "").strip().lower():
+        return None
+    b = _bdm_by_owner(db, owner)
+    if not b or not b.get("email"):
+        return "owner not in BDM directory - no email"
+    if not digest_mod.smtp_configured():
+        return "email not configured"
+    row = db.execute(f"SELECT p.*, t.reason AS triage_reason FROM projects p LEFT JOIN triage t "
+                     f"ON t.project_hash=p.project_hash WHERE p.project_hash=?", (project_hash,)).fetchone()
+    if not row:
+        return None
+    p = enrich(dict(row))
+    who = current_user() or "The tenders team"
+    subject, html = brief_mod.build_allocation(p, b["name"], who, p.get("triage_reason") or "")
+    cc = _env_list("ALLOCATION_CC")
+    db.execute("UPDATE triage SET notified_owner=?, notified_at=? WHERE project_hash=?",
+               (b["name"], datetime.utcnow().isoformat(), project_hash))
+    db.commit()
+
+    def _send():
+        try:
+            ok, detail = digest_mod.send_mail(subject, html, [b["email"]], cc=cc)
+        except Exception as e:      # logged, never shown to the browser
+            ok, detail = False, repr(e)
+        _log_notification(project_hash, "allocation", b["email"], ok, detail)
+    threading.Thread(target=_send, daemon=True).start()
+    return "emailed " + b["name"]
+
+
+@app.route("/settings")
+def settings_page():
+    return render_template("settings.html", states=routing.STATES,
+                           smtp=digest_mod.smtp_configured(),
+                           allocation_cc=", ".join(_env_list("ALLOCATION_CC")),
+                           brief_to=", ".join(_env_list("BRIEF_TO")),
+                           review_to=", ".join(_env_list("BRIEF_REVIEW_TO")))
+
+
+@app.route("/api/bdms", methods=["GET"])
+def api_bdms():
+    return jsonify(list_bdms(get_db(), active_only=False))
+
+
+@app.route("/api/bdms", methods=["POST"])
+def api_bdms_save():
+    j = request.get_json(silent=True) or {}
+    name = str(j.get("name") or "").strip()[:80]
+    email = str(j.get("email") or "").strip()[:120]
+    regions = ",".join(r for r in (x.strip().upper() for x in str(j.get("regions") or "").split(","))
+                       if r in routing.STATES + ["OTHER"])
+    if not name:
+        return jsonify({"ok": False, "error": "name is required"}), 400
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return jsonify({"ok": False, "error": "that email doesn't look right"}), 400
+    db = get_db()
+    active = 0 if j.get("active") in (0, False, "0") else 1
+    if db.execute("SELECT 1 FROM bdms WHERE name=?", (name,)).fetchone():
+        db.execute("UPDATE bdms SET email=?, regions=?, active=? WHERE name=?", (email, regions, active, name))
+    else:
+        db.execute("INSERT INTO bdms (name, email, regions, active, created_at) VALUES (?,?,?,?,?)",
+                   (name, email, regions, active, datetime.utcnow().isoformat()))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/bdms/<int:bdm_id>", methods=["DELETE"])
+def api_bdms_delete(bdm_id):
+    db = get_db()
+    db.execute("DELETE FROM bdms WHERE id=?", (bdm_id,))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+def _brief(db):
+    return brief_mod.build_brief(load_projects(db, hide_closed=True), list_bdms(db))
+
+
+@app.route("/brief")
+def brief_preview():
+    """Monday BDM email, exactly as it will be sent. Michael + Nick review here."""
+    subject, html, _ = _brief(get_db())
+    return html
+
+
+def brief_recipients(db, mode):
+    if mode == "review":
+        return _env_list("BRIEF_REVIEW_TO"), []
+    to = _env_list("BRIEF_TO")
+    for b in list_bdms(db):
+        if b.get("email") and b["email"] not in to:
+            to.append(b["email"])
+    return to, _env_list("BRIEF_CC")
+
+
+@app.route("/api/brief/send", methods=["POST"])
+def brief_send():
+    mode = (request.get_json(silent=True) or {}).get("mode", "review")
+    if mode not in ("review", "all"):
+        return jsonify({"ok": False, "error": "mode must be review or all"}), 400
+    db = get_db()
+    subject, html, stats = _brief(db)
+    to, cc = brief_recipients(db, mode)
+    try:
+        ok, detail = digest_mod.send_mail(("[REVIEW] " if mode == "review" else "") + subject, html, to, cc=cc)
+    except Exception:
+        app.logger.exception("brief send failed")
+        ok, detail = False, "send failed - check Railway logs"
+    _log_notification("", "brief-" + mode, ",".join(to + cc), ok, detail)
+    return jsonify({"ok": ok, "detail": detail, "stats": stats}), (200 if ok else 500)
+
+
+@app.route("/maybes")
+def maybes_preview():
+    db = get_db()
+    region = (request.args.get("region") or "").upper()
+    subject, html, n = brief_mod.build_maybes(load_projects(db, hide_closed=True), list_bdms(db),
+                                              regions=[region] if region else None)
+    return html
+
+
+def send_maybes(db):
+    """One email per BDM with their regions; BDMs with no regions, or no
+    directory at all, get the whole list via BRIEF_TO."""
+    rows = load_projects(db, hide_closed=True)
+    bdms = list_bdms(db)
+    results = []
+    covered = False
+    for b in bdms:
+        regs = [r.strip().upper() for r in (b.get("regions") or "").split(",") if r.strip()]
+        if not (regs and b.get("email")):
+            continue
+        covered = True
+        subject, html, n = brief_mod.build_maybes(rows, bdms, regions=regs)
+        if n:
+            results.append((b["email"],) + digest_mod.send_mail(subject, html, [b["email"]],
+                                                                cc=_env_list("BRIEF_CC")))
+    if not covered:
+        subject, html, n = brief_mod.build_maybes(rows, bdms)
+        results.append(("BRIEF_TO",) + digest_mod.send_mail(subject, html, _env_list("BRIEF_TO"),
+                                                            cc=_env_list("BRIEF_CC")))
+    for to, ok, detail in results:
+        _log_notification("", "maybes", to, ok, detail)
+    return results
+
+
+@app.route("/api/maybes/send", methods=["POST"])
+def maybes_send():
+    try:
+        res = send_maybes(get_db())
+    except Exception:
+        app.logger.exception("maybes send failed")
+        return jsonify({"ok": False, "error": "send failed - check Railway logs"}), 500
+    return jsonify({"ok": all(r[1] for r in res) if res else False,
+                    "sent": [{"to": r[0], "ok": r[1], "detail": r[2]} for r in res]})
+
+
+@app.route("/api/notifications")
+def api_notifications():
+    rows = get_db().execute("SELECT * FROM notifications ORDER BY sent_at DESC LIMIT 100").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+# ─── Data repair + export ───────────────────────────────────────────────
+
+def _orphaned_decisions(db):
+    """Decisions sitting on rows that were merged away (invisible everywhere)."""
+    rows = db.execute("""SELECT t.*, p.project_name, p.merged_into FROM triage t
+                         JOIN projects p ON p.project_hash = t.project_hash
+                         WHERE p.merged_into IS NOT NULL
+                           AND t.decision IS NOT NULL AND t.decision != ''""").fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        canon, seen = r["merged_into"], set()
+        while canon and canon not in seen:
+            seen.add(canon)
+            nxt = db.execute("SELECT merged_into FROM projects WHERE project_hash=?", (canon,)).fetchone()
+            if not (nxt and nxt["merged_into"]):
+                break
+            canon = nxt["merged_into"]
+        target = db.execute("""SELECT p.project_name, t.decision FROM projects p LEFT JOIN triage t
+                               ON t.project_hash=p.project_hash WHERE p.project_hash=?""", (canon,)).fetchone()
+        r["canonical"] = canon
+        r["canonical_name"] = target["project_name"] if target else None
+        r["canonical_decision"] = target["decision"] if target else None
+        r["action"] = ("move decision to canonical" if target and not target["decision"]
+                       else "keep canonical decision, add this one as a comment")
+        out.append(r)
+    return out
+
+
+@app.route("/admin/repair", methods=["GET"])
+def admin_repair():
+    """Preview of the one-off data repairs. Nothing changes until Apply."""
+    db = get_db()
+    orphans = _orphaned_decisions(db)
+    raw = db.execute(f"SELECT project_hash, project_name, stage, notes, source, researched_at, closing_date "
+                     f"FROM projects p WHERE {VISIBLE_WHERE}").fetchall()
+    changed = []
+    for r in raw:
+        r = dict(r)
+        eff = effective_closing(r)
+        if (r.get("closing_date") or None) != eff:
+            changed.append({"project_name": r["project_name"], "stored": r.get("closing_date"),
+                            "effective": eff, "stage": (r.get("stage") or "")[:120]})
+    return render_template("repair.html", orphans=orphans, changed=changed)
+
+
+@app.route("/admin/repair", methods=["POST"])
+def admin_repair_apply():
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+    who = current_user() or "admin"
+    cols = ["decision", "reason", "decided_by", "decided_at", "status", "owner", "next_steps",
+            "scope", "status_updated_at", "value", "outcome_reason", "submitted_at", "outcome_at"]
+    moved = noted = dates = 0
+    try:
+        for o in _orphaned_decisions(db):
+            if not o["canonical_decision"]:
+                db.execute("DELETE FROM triage WHERE project_hash=?", (o["canonical"],))
+                db.execute(f"INSERT INTO triage (project_hash, {', '.join(cols)}) VALUES (?{', ?' * len(cols)})",
+                           [o["canonical"]] + [o.get(c) for c in cols])
+                moved += 1
+            else:
+                db.execute("INSERT INTO comments (project_hash, author, body, created_at) VALUES (?,?,?,?)",
+                           (o["canonical"], who,
+                            f"[repair] merged duplicate had decision: {o['decision']}"
+                            + (f"; status: {o['status']}" if o.get("status") else "")
+                            + (f"; owner: {o['owner']}" if o.get("owner") else "")
+                            + (f"; reason: {o['reason']}" if o.get("reason") else ""), now))
+                noted += 1
+            # the source triage row stays (history); it is filtered out of every view
+        # persist the corrected closing dates, keeping the old value alongside
+        raw = db.execute("SELECT project_hash, stage, notes, source, researched_at, closing_date FROM projects").fetchall()
+        for r in raw:
+            r = dict(r)
+            eff = effective_closing(r)
+            if (r.get("closing_date") or None) != eff:
+                db.execute("""UPDATE projects SET closing_date_prev=COALESCE(closing_date_prev, closing_date),
+                              closing_date=?, is_closed=? WHERE project_hash=?""",
+                           (eff, 1 if deadline_status(eff) == "closed" else 0, r["project_hash"]))
+                dates += 1
+        db.commit()
+    except Exception:
+        db.rollback()
+        app.logger.exception("repair failed")
+        return jsonify({"ok": False, "error": "repair failed - nothing was changed"}), 500
+    return jsonify({"ok": True, "decisions_moved": moved, "decisions_noted": noted, "closing_dates_fixed": dates})
+
+
+@app.route("/api/export")
+def api_export():
+    """Everything people have entered (decisions, comments, BDMs, emails sent) plus
+    the project keys, as one JSON file. Weekly backup; see README."""
+    db = get_db()
+    def q(sql):
+        return [dict(r) for r in db.execute(sql).fetchall()]
+    payload = {
+        "exported_at": datetime.utcnow().isoformat(),
+        "triage": q("SELECT * FROM triage"),
+        "comments": q("SELECT * FROM comments"),
+        "bdms": q("SELECT * FROM bdms"),
+        "notifications": q("SELECT * FROM notifications"),
+        "runs": q("SELECT * FROM runs"),
+        "projects": q("""SELECT project_hash, project_name, customer, location, source_url, stage,
+                         closing_date, closing_date_prev, verdict, doability_score, first_seen_at,
+                         last_seen_at, hidden, merged_into, source, portal, portal_ref FROM projects"""),
+    }
+    resp = jsonify(payload)
+    resp.headers["Content-Disposition"] = (
+        f"attachment; filename=vi-triage-backup-{date.today().isoformat()}.json")
+    return resp
+
+
 # ─── Email alert ingest ─────────────────────────────────────────────────
 # Three ways in, one parser:
 #   POST /api/ingest/email   machine path (inbox poller / Power Automate); token-protected
@@ -1472,11 +1934,13 @@ def api_upload():
 #   POST /api/ingest/manual  upload page: add a tender by hand (source = manual)
 
 def _ingest_token_ok():
-    token = os.environ.get("INGEST_TOKEN", "")
-    if not token:
-        return True   # local dev; README says set INGEST_TOKEN on Railway
-    supplied = request.headers.get("X-Ingest-Token", "") or request.args.get("token", "")
-    return secrets.compare_digest(supplied, token)
+    """Header only (a query-string token ends up in access logs); an unset
+    INGEST_TOKEN refuses everything. A signed-in user may also post."""
+    if auth.token_ok(request.headers.get("X-Ingest-Token"), "INGEST_TOKEN"):
+        return True
+    if auth.token_ok(request.headers.get("X-API-Token"), "API_TOKEN"):
+        return True
+    return bool(session.get("user")) and auth._same_origin()
 
 
 def _msg_from_request():
@@ -1514,7 +1978,8 @@ def api_ingest_email():
         res = ingest_alert_message(db, msg, via=request.args.get("via", "email"))
     except Exception as e:
         db.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
+        app.logger.exception("request failed")
+        return jsonify({"ok": False, "error": "server error - check Railway logs"}), 500
     return jsonify({"ok": True, **res})
 
 
@@ -1534,7 +1999,8 @@ def api_ingest_paste():
         res = ingest_alert_message(db, msg, via="paste")
     except Exception as e:
         db.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
+        app.logger.exception("request failed")
+        return jsonify({"ok": False, "error": "server error - check Railway logs"}), 500
     return jsonify({"ok": True, **res})
 
 
@@ -1545,6 +2011,12 @@ def api_ingest_manual():
     if not title:
         return jsonify({"ok": False, "error": "title is required"}), 400
     url = (j.get("url") or "").strip()
+    if url and not re.match(r"https?://", url, re.I):
+        return jsonify({"ok": False, "error": "link must start with http:// or https://"}), 400
+    if j.get("closing_date"):
+        j["closing_date"] = valid_iso_date(j["closing_date"])
+        if not j["closing_date"]:
+            return jsonify({"ok": False, "error": "closing date must be YYYY-MM-DD"}), 400
     portal, ref, url_norm = portal_fields(url, j.get("portal_ref", ""))
     row = {
         "project_name": title, "customer": (j.get("buyer") or "").strip(),
@@ -1552,7 +2024,7 @@ def api_ingest_manual():
         "opportunity_type": j.get("opportunity_type") or email_ingest._opp_type(title),
         "stage": "Open" + (f" — closes {j['closing_date']}" if j.get("closing_date") else ""),
         "signal_summary": (j.get("description") or "").strip(),
-        "notes": "Added manually" + (f" by {j['added_by']}" if j.get("added_by") else ""),
+        "notes": "Added manually by " + (j.get("added_by") or current_user() or "team"),
         "closing_date": j.get("closing_date") or None,
         "portal": portal, "portal_ref": (j.get("portal_ref") or ref or "").strip().upper(),
         "url_norm": url_norm,
@@ -1563,7 +2035,8 @@ def api_ingest_manual():
         db.commit()
     except Exception as e:
         db.rollback()
-        return jsonify({"ok": False, "error": str(e)}), 500
+        app.logger.exception("request failed")
+        return jsonify({"ok": False, "error": "server error - check Railway logs"}), 500
     return jsonify({"ok": True, "status": status, "project_hash": h})
 
 

@@ -10,10 +10,15 @@ is written back over HTTP. No API key lives on Railway.
 
 ## The prompt
 
+Since 9 Oct 2026 the app needs sign-in. Scheduled jobs send the header
+`X-API-Token: <API_TOKEN from Railway>` on every request below. Put the real token in the
+scheduled task's prompt or environment, never in this repo.
+
 Paste this into Cowork:
 
 > Pull the research queue from
 > `https://web-production-59089.up.railway.app/api/research-queue?limit=15`
+> (send the header `X-API-Token: <token>` on every request to this site)
 >
 > For each tender, use web search to establish:
 > 1. **The real closing date.** Most rows have none — find it, or state that ICN

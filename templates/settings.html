@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VI Triage · BDMs</title>
+<style>
+  :root{--bg:#0b0d12;--panel:#141821;--line:#262c38;--text:#e8ebf1;--muted:#9aa3b2;--accent:#f0a93b;--ok:#2ecc8f;--err:#e05563;--blue:#5fb3f0}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 16px 60px}
+  a{color:var(--blue)}
+  h1{font-size:22px;margin:0 0 4px} h1 span{color:var(--accent)}
+  h2{font-size:15px;margin:28px 0 8px}
+  p.sub{color:var(--muted);margin:0 0 18px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:10px}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle}
+  th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  input[type=text],input[type=email]{width:100%;padding:7px 9px;border-radius:6px;border:1px solid var(--line);background:#0e1118;color:var(--text);font-size:13px}
+  .states{display:flex;flex-wrap:wrap;gap:4px}
+  .states label{font-size:12px;border:1px solid var(--line);border-radius:5px;padding:2px 6px;cursor:pointer;user-select:none}
+  .states input{margin:0 3px 0 0;vertical-align:-1px}
+  button{padding:7px 12px;border-radius:6px;border:1px solid var(--line);background:#1b2030;color:var(--text);cursor:pointer;font-size:13px}
+  button.primary{background:var(--accent);color:#1a1205;border:0;font-weight:700}
+  button.danger{color:var(--err)}
+  .msg{font-size:13px;margin-left:10px}
+  .kv{display:grid;grid-template-columns:200px 1fr;gap:6px 12px;font-size:13px}
+  .kv div:nth-child(odd){color:var(--muted)}
+  code{background:#0e1118;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
+  .ok{color:var(--ok)} .bad{color:var(--err)}
+  @media (max-width:700px){ .kv{grid-template-columns:1fr} th:nth-child(3),td:nth-child(3){min-width:160px} .tablewrap{overflow-x:auto} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/">← Dashboard</a>
+  <h1 style="margin-top:12px">BDMs <span>&amp; email settings</span></h1>
+  <p class="sub">Who covers which state. A lead allocated to a BDM (owner set to their name) emails them straight away,
+    and the Monday email and monthly maybes are split by these regions.</p>
+
+  <h2>BDM directory</h2>
+  <div class="panel tablewrap">
+    <table>
+      <thead><tr><th style="width:20%">Name</th><th style="width:26%">Email</th><th>States</th><th style="width:70px">Active</th><th style="width:130px"></th></tr></thead>
+      <tbody id="rows"></tbody>
+      <tfoot>
+        <tr>
+          <td><input type="text" id="nName" placeholder="e.g. Adam"></td>
+          <td><input type="email" id="nEmail" placeholder="adam@visioni.com.au"></td>
+          <td><div class="states" id="nStates"></div></td>
+          <td><input type="checkbox" id="nActive" checked></td>
+          <td><button class="primary" onclick="add()">Add BDM</button></td>
+        </tr>
+      </tfoot>
+    </table>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <h2>Email setup</h2>
+  <div class="panel kv">
+    <div>Sending account</div><div>{% if smtp %}<span class="ok">configured</span>{% else %}<span class="bad">not configured</span> - set <code>SMTP_USER</code> and <code>SMTP_PASS</code> in Railway{% endif %}</div>
+    <div>Allocation emails cc</div><div>{{ allocation_cc or 'nobody' }} <span style="color:var(--muted)">(<code>ALLOCATION_CC</code>)</span></div>
+    <div>Monday email review list</div><div>{{ review_to or 'not set' }} <span style="color:var(--muted)">(<code>BRIEF_REVIEW_TO</code>, e.g. Michael and Nick)</span></div>
+    <div>Monday email extra recipients</div><div>{{ brief_to or 'none - goes to the BDMs above' }} <span style="color:var(--muted)">(<code>BRIEF_TO</code>)</span></div>
+  </div>
+
+  <h2>Monday BDM email</h2>
+  <div class="panel">
+    <a href="/brief" target="_blank">Preview this week's email</a> · <a href="/maybes" target="_blank">Preview monthly maybes</a>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button onclick="sendBrief('review')">Send review copy</button>
+      <button class="primary" onclick="sendBrief('all')">Send to all BDMs</button>
+      <button onclick="sendMaybes()">Send monthly maybes</button>
+      <span class="msg" id="smsg"></span>
+    </div>
+  </div>
+</div>
+<script>
+const STATES={{ states|tojson }};
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function stateBoxes(prefix, selected){
+  const sel=(selected||'').split(',').map(x=>x.trim());
+  return STATES.map(s=>`<label><input type="checkbox" data-st="${s}" class="${prefix}" ${sel.includes(s)?'checked':''}>${s}</label>`).join('');
+}
+function picked(cls){return [...document.querySelectorAll('.'+cls+':checked')].map(x=>x.dataset.st).join(',');}
+async function load(){
+  const r=await fetch('/api/bdms'); if(r.status===401){location.href='/login';return;}
+  const list=await r.json();
+  document.getElementById('rows').innerHTML=list.map(b=>`<tr>
+    <td>${esc(b.name)}</td>
+    <td><input type="email" id="e${b.id}" value="${esc(b.email||'')}"></td>
+    <td><div class="states">${stateBoxes('s'+b.id, b.regions)}</div></td>
+    <td><input type="checkbox" id="a${b.id}" ${b.active?'checked':''}></td>
+    <td><button data-id="${b.id}" data-name="${esc(b.name)}" onclick="save(+this.dataset.id, this.dataset.name)">Save</button> <button class="danger" onclick="del(${b.id})">Remove</button></td>
+  </tr>`).join('') || '<tr><td colspan="5" style="color:var(--muted)">No BDMs yet. Michael is sending the regions; add them below.</td></tr>';
+  document.getElementById('nStates').innerHTML=stateBoxes('ns','');
+}
+async function post(body){
+  const r=await fetch('/api/bdms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  document.getElementById('msg').innerHTML=r.ok?'<span class="ok">Saved</span>':'<span class="bad">'+esc(d.error||'Not saved')+'</span>';
+  if(r.ok) load();
+}
+function add(){post({name:document.getElementById('nName').value,email:document.getElementById('nEmail').value,regions:picked('ns'),active:document.getElementById('nActive').checked?1:0});
+  document.getElementById('nName').value='';document.getElementById('nEmail').value='';}
+function save(id,name){post({name,email:document.getElementById('e'+id).value,regions:picked('s'+id),active:document.getElementById('a'+id).checked?1:0});}
+async function del(id){ if(!confirm('Remove this BDM?')) return; await fetch('/api/bdms/'+id,{method:'DELETE'}); load(); }
+async function sendBrief(mode){
+  if(mode==='all'&&!confirm('Send this week\'s email to every BDM now?')) return;
+  const m=document.getElementById('smsg'); m.textContent='Sending…';
+  const r=await fetch('/api/brief/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+  const d=await r.json().catch(()=>({}));
+  m.innerHTML=d.ok?'<span class="ok">'+esc(d.detail)+'</span>':'<span class="bad">'+esc(d.detail||d.error||'Not sent')+'</span>';
+}
+async function sendMaybes(){
+  if(!confirm('Send the monthly maybes to the BDMs now?')) return;
+  const m=document.getElementById('smsg'); m.textContent='Sending…';
+  const r=await fetch('/api/maybes/send',{method:'POST'});
+  const d=await r.json().catch(()=>({}));
+  m.innerHTML=d.ok?'<span class="ok">Sent ('+(d.sent||[]).length+')</span>':'<span class="bad">'+esc(d.error||((d.sent||[])[0]||{}).detail||'Not sent')+'</span>';
+}
+load();
+</script>
+</body>
+</html>

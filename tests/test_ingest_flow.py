@@ -14,6 +14,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 if not os.environ.get("DATABASE_URL"):
     os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "t.db")
+os.environ.setdefault("APP_PASSWORD", "test-pass")
+os.environ.setdefault("INGEST_TOKEN", "test-ingest")
+os.environ["COOKIE_INSECURE"] = "1"
 import app as triage  # noqa: E402
 
 FIX = os.path.join(ROOT, "tests", "fixtures")
@@ -31,10 +34,13 @@ class FlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.c = triage.app.test_client()
+        r = cls.c.post("/login", data={"name": "Tester", "password": os.environ["APP_PASSWORD"]})
+        assert r.status_code == 302, r.status_code
 
     def post_eml(self, name):
         with open(os.path.join(FIX, name), "rb") as f:
-            return self.c.post("/api/ingest/email", data=f.read(), content_type="message/rfc822").get_json()
+            return self.c.post("/api/ingest/email", data=f.read(), content_type="message/rfc822",
+                               headers={"X-Ingest-Token": os.environ["INGEST_TOKEN"]}).get_json()
 
     def test_1_alert_lands_on_dashboard(self):
         r = self.post_eml("qtenders_multi.eml")
@@ -107,15 +113,22 @@ class FlowTests(unittest.TestCase):
         self.assertGreaterEqual(wk["both"], 2)
 
     def test_8_token_enforced_when_set(self):
+        anon = triage.app.test_client()          # not signed in: the poller's path
+        prev = os.environ.get("INGEST_TOKEN")
         os.environ["INGEST_TOKEN"] = "s3cret"
         try:
-            r = self.c.post("/api/ingest/email", json={"subject": "x", "text": "y"})
+            r = anon.post("/api/ingest/email", json={"subject": "x", "text": "y"})
             self.assertEqual(r.status_code, 403)
-            r = self.c.post("/api/ingest/email", json={"subject": "Tender alert: CCTV hire", "text": "camera hire"},
-                            headers={"X-Ingest-Token": "s3cret"})
+            r = anon.post("/api/ingest/email", json={"subject": "x", "text": "y"}, query_string={"token": "s3cret"})
+            self.assertEqual(r.status_code, 403)   # query-string tokens no longer accepted
+            r = anon.post("/api/ingest/email", json={"subject": "Tender alert: CCTV hire", "text": "camera hire"},
+                          headers={"X-Ingest-Token": "s3cret"})
             self.assertEqual(r.status_code, 200)
-        finally:
             del os.environ["INGEST_TOKEN"]
+            r = anon.post("/api/ingest/email", json={"subject": "x", "text": "y"})
+            self.assertEqual(r.status_code, 403)   # unset token fails closed
+        finally:
+            os.environ["INGEST_TOKEN"] = prev or "test-ingest"
 
     def test_9_digest_still_renders(self):
         self.assertEqual(self.c.get("/digest/preview").status_code, 200)

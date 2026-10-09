@@ -13,7 +13,9 @@ Env vars:
   DIGEST_TO      comma-separated recipients
   DASHBOARD_URL  default https://web-production-59089.up.railway.app
 """
+import html as _html
 import os
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -21,8 +23,8 @@ from datetime import datetime, timedelta
 
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://web-production-59089.up.railway.app")
 
-DEC_LABEL = {"full": "Full tender response", "philip": "Philip reach-out", "pass": "Pass"}
-DEC_COLOR = {"full": "#1d7a4f", "philip": "#6b4fa0", "pass": "#b3434f"}
+DEC_LABEL = {"full": "Full tender response", "philip": "Philip reach-out", "bdm": "Sent to BDM", "pass": "Pass"}
+DEC_COLOR = {"full": "#1d7a4f", "philip": "#6b4fa0", "bdm": "#1a4f8b", "pass": "#b3434f"}
 
 ACTIVE_STATUSES = ("Screening", "Downloading docs", "Drafting response",
                    "With Michael/Alister", "Submitted", "Awaiting outcome")
@@ -53,7 +55,7 @@ def collect(db):
         SELECT p.project_name, p.customer, p.closing_date, p.source_url,
                t.decision, t.reason, t.decided_by, t.owner, t.next_steps, t.scope, t.status
         FROM triage t JOIN projects p ON p.project_hash = t.project_hash
-        WHERE t.decided_at >= ? AND t.decision IN ('full','philip')
+        WHERE t.decided_at >= ? AND t.decision IN ('full','philip','bdm') AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
         ORDER BY CASE t.decision WHEN 'full' THEN 0 WHEN 'philip' THEN 1 ELSE 2 END
     """, (week_ago,)).fetchall()
 
@@ -61,7 +63,7 @@ def collect(db):
         SELECT p.project_name, p.customer, p.closing_date, p.source_url,
                t.decision, t.status, t.owner, t.next_steps, t.scope
         FROM triage t JOIN projects p ON p.project_hash = t.project_hash
-        WHERE t.decision IN ('full','philip')
+        WHERE t.decision IN ('full','philip','bdm') AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
           AND (t.status IS NULL OR t.status NOT IN ('Won','Lost'))
         ORDER BY CASE WHEN p.closing_date IS NULL OR p.closing_date='' THEN 1 ELSE 0 END,
                  p.closing_date ASC
@@ -70,14 +72,14 @@ def collect(db):
     outcomes = db.execute("""
         SELECT p.project_name, p.customer, t.status, t.owner
         FROM triage t JOIN projects p ON p.project_hash = t.project_hash
-        WHERE t.status IN ('Won','Lost') AND t.status_updated_at >= ?
+        WHERE t.status IN ('Won','Lost') AND t.status_updated_at >= ? AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
     """, (week_ago,)).fetchall()
 
     deadlines = db.execute("""
         SELECT p.project_name, p.customer, p.closing_date, p.source_url,
                t.decision, t.owner, t.status
         FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
-        WHERE p.active='true' AND (p.is_closed=0 OR p.is_closed IS NULL)
+        WHERE p.active='true' AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
           AND p.closing_date >= ? AND p.closing_date <= ?
           AND (t.decision IN ('full','philip') OR p.verdict='GO')
         ORDER BY p.closing_date ASC
@@ -93,12 +95,12 @@ def collect(db):
 
 
 def _esc(s):
-    return (str(s or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return _html.escape(str(s or ""), quote=True)
 
 
 def _link(name, url):
     name = _esc(name)
-    if url:
+    if url and re.match(r"https?://", str(url), re.I):
         return f'<a href="{_esc(url)}" style="color:#1a4f8b;text-decoration:none">{name}</a>'
     return name
 
@@ -243,6 +245,39 @@ def build_html(data):
 </body></html>"""
 
 
+def smtp_configured():
+    return bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASS"))
+
+
+def send_mail(subject, html, to, cc=None, reply_to=None):
+    """Send one HTML email. Returns (ok, detail). 20s network timeout."""
+    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user = os.environ.get("SMTP_USER", "")
+    password = os.environ.get("SMTP_PASS", "")
+    sender = os.environ.get("DIGEST_FROM", user)
+    to = [t for t in (to or []) if t]
+    cc = [c for c in (cc or []) if c and c not in to]
+    if not (user and password):
+        return False, "email not configured (SMTP_USER / SMTP_PASS)"
+    if not to:
+        return False, "no recipient"
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP(host, port, timeout=20) as s:
+        s.starttls()
+        s.login(user, password)
+        s.sendmail(sender, to + cc, msg.as_string())
+    return True, "sent to " + ", ".join(to + cc)
+
+
 def send(db):
     """Build and email the digest. Returns (ok, detail)."""
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -265,7 +300,7 @@ def send(db):
     msg["To"] = ", ".join(to)
     msg.attach(MIMEText(html, "html"))
 
-    with smtplib.SMTP(host, port) as s:
+    with smtplib.SMTP(host, port, timeout=20) as s:
         s.starttls()
         s.login(user, password)
         s.sendmail(sender, to, msg.as_string())
