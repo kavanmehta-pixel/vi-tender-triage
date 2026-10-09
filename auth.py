@@ -8,8 +8,9 @@ decisions and comments are attributed. Scheduled jobs (the Cowork research and
 digest tasks) send X-API-Token: $API_TOKEN instead. The inbox poller's
 /api/ingest/email keeps its own INGEST_TOKEN.
 
-Fails closed: with APP_PASSWORD unset nobody can sign in. Set it in Railway
-before deploying.
+Sign-in switches on when APP_PASSWORD is set in Railway. Until then the app
+stays open as before (Kavan, 9 Oct: "fix the site first, make it secure after"),
+and the dashboard shows a reminder banner.
 """
 import hashlib
 import hmac
@@ -37,6 +38,10 @@ def token_ok(supplied, env_name):
     """Constant-time compare; an unset token never matches (fail closed)."""
     expected = _env(env_name)
     return bool(expected) and bool(supplied) and hmac.compare_digest(str(supplied), expected)
+
+
+def auth_enabled():
+    return bool(_env("APP_PASSWORD"))
 
 
 def current_user():
@@ -71,6 +76,8 @@ def init(app):
         ep = request.endpoint or ""
         if ep in PUBLIC_ENDPOINTS or ep in SELF_AUTH_ENDPOINTS:
             return None
+        if not auth_enabled():
+            return None     # open mode until APP_PASSWORD is set
         if token_ok(request.headers.get("X-API-Token"), "API_TOKEN"):
             g.user = "api"
             return None
@@ -85,6 +92,8 @@ def init(app):
     @app.route("/login", methods=["GET", "POST"])
     def login():
         configured = bool(_env("APP_PASSWORD"))
+        if not configured:
+            return redirect("/")
         error = None
         nxt = request.values.get("next") or "/"
         # local paths only: no scheme, no host, no backslash/whitespace tricks ("/\t/evil.com")
@@ -129,4 +138,4 @@ def init(app):
 
     @app.context_processor
     def _inject_user():
-        return {"current_user": current_user()}
+        return {"current_user": current_user(), "auth_enabled": auth_enabled()}

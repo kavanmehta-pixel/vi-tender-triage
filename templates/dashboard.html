@@ -307,7 +307,10 @@ tr.row:hover .row-actions{opacity:1}
 
 <script>
 let DATA=[], DATA_NEW=[], BDMS=[], view='all', sortK=null, sortAsc=false;
-const CURRENT_USER={{ (current_user or '')|tojson }};
+const AUTH_ON={{ 'true' if auth_enabled else 'false' }};
+let CURRENT_USER={{ (current_user or '')|tojson }};
+// open mode (no sign-in yet): remember the name typed in the notes box instead
+if(!CURRENT_USER){ try{ CURRENT_USER=localStorage.getItem('vi_name')||''; }catch(e){} }
 const TEAM=['Kavan','Alister','Philip','Michael','Nick','Danny','Robin'];
 const LANE_LABEL={tender:'Tender / EOI',philip:'Philip',bdm:'BDM',maybe:'Maybes sweep',pass:'Passed'};
 let filt={q:new URLSearchParams(location.search).get('q')?.toLowerCase()||'',verdict:'',action:'',sector:'',loc:'',card:'',deadline:'',triage:'',research:'',source:'',lane:''};
@@ -363,7 +366,9 @@ async function load(){
   DATA=all; BDMS=bdms; syncNew();
   const lr=stats.latest_run;
   document.getElementById('stamp').innerHTML=(lr?`Last upload: ${esc(lr.created_at.slice(0,10))} · ${stats.new_this_week} new this week · ${stats.total} open`:'No runs yet')+
-    '<br><span class="nav-links"><a href="/upload">Upload / add tender</a> · <a href="/brief" target="_blank">Monday BDM email</a> · <a href="/maybes" target="_blank">Monthly maybes</a> · <a href="/report">Outcomes</a> · <a href="/settings">BDMs &amp; settings</a> · <a href="/logout">Sign out'+(CURRENT_USER?' ('+esc(CURRENT_USER)+')':'')+'</a></span>';
+    '<br><span class="nav-links"><a href="/upload">Upload / add tender</a> · <a href="/brief" target="_blank">Monday BDM email</a> · <a href="/maybes" target="_blank">Monthly maybes</a> · <a href="/report">Outcomes</a> · <a href="/settings">BDMs &amp; settings</a>'+(AUTH_ON?' · <a href="/logout">Sign out'+(CURRENT_USER?' ('+esc(CURRENT_USER)+')':'')+'</a>':'')+'</span>';
+  if(!AUTH_ON){ const b=document.getElementById('alertBanner'); b.className='alert-banner show';
+    b.innerHTML='<b>Sign-in is off.</b> Anyone with this link can see and change tenders. Set <code>APP_PASSWORD</code> in Railway to switch it on.'; }
   const secs=[...new Set(DATA.map(d=>d.sector).filter(Boolean))].sort();
   const locs=[...new Set(DATA.map(d=>d.location).filter(Boolean))].sort();
   secs.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;document.getElementById('fSector').append(o)});
@@ -791,6 +796,7 @@ async function addComment(i, hash){
   const body=input.value.trim();
   if(!body) return;
   const author=document.getElementById(`cauthor-${i}`)?.value||CURRENT_USER||'';
+  if(!AUTH_ON&&author){ CURRENT_USER=author; try{ localStorage.setItem('vi_name',author); }catch(e){} }
   await fetch(`/api/comments/${hash}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body,author})});
   input.value='';
   // update comment count locally

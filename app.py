@@ -1978,6 +1978,8 @@ def _ingest_token_ok():
         return True
     if auth.token_ok(request.headers.get("X-API-Token"), "API_TOKEN"):
         return True
+    if not auth.auth_enabled():
+        return False    # the poller always needs INGEST_TOKEN, even in open mode
     return bool(session.get("user")) and auth._same_origin()
 
 

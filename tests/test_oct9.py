@@ -187,6 +187,16 @@ class ReviewFixes(unittest.TestCase):
         n = [p for p in self.c.get("/api/projects?hide_closed=0").get_json() if p["project_name"] == "Unique Dumping Camera Hire"]
         self.assertEqual(len(n), 1)
 
+    def test_open_mode_without_password(self):
+        anon = triage.app.test_client()
+        env = {k: v for k, v in os.environ.items() if k != "APP_PASSWORD"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(anon.get("/api/projects").status_code, 200)
+            self.assertEqual(anon.get("/").status_code, 200)
+            self.assertIn(b"Sign-in is off", anon.get("/").data)
+            self.assertEqual(anon.get("/login").status_code, 302)
+            self.assertEqual(anon.post("/api/ingest/email", json={"subject": "x"}).status_code, 403)
+
     def test_owner_must_be_string_safe(self):
         h = self.c.get("/api/projects").get_json()[0]["project_hash"]
         self.assertEqual(self.c.post(f"/api/triage/{h}", json={"owner": 5}).status_code, 200)
