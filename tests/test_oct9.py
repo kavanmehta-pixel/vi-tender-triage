@@ -145,5 +145,52 @@ class Oct9(unittest.TestCase):
         self.assertIn("triage", exp.get_json())
 
 
+class ReviewFixes(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.c = triage.app.test_client()
+        cls.c.post("/login", data={"name": "Kavan", "password": os.environ["APP_PASSWORD"]})
+
+    def test_open_redirect_blocked(self):
+        anon = triage.app.test_client()
+        for bad in ["//evil.com", "/\t/evil.com", "/\\evil.com", "https://evil.com"]:
+            r = anon.post("/login", data={"name": "a", "password": os.environ["APP_PASSWORD"], "next": bad})
+            self.assertEqual(r.headers["Location"], "/", bad)
+
+    def test_repair_is_safe_and_idempotent(self):
+        db = triage.dbx.connect()
+        now = "2026-10-01T00:00:00"
+        for h, name in (("canon1", "Canon"), ("dupA", "Dup A"), ("dupB", "Dup B")):
+            db.execute("INSERT INTO projects (project_hash, project_name, active, first_seen_at, source) VALUES (?,?,?,?,?)",
+                       (h, name, "true", now, "scrape"))
+        db.execute("UPDATE projects SET merged_into='canon1', hidden=1 WHERE project_hash IN ('dupA','dupB')")
+        db.execute("INSERT INTO triage (project_hash, decision, owner, next_steps, reason) VALUES ('canon1','', 'Nick', 'call', 'keep')")
+        db.execute("INSERT INTO triage (project_hash, decision, reason) VALUES ('dupA','full','A')")
+        db.execute("INSERT INTO triage (project_hash, decision, reason) VALUES ('dupB','philip','B')")
+        db.commit(); db.close()
+        r1 = self.c.post("/admin/repair").get_json()
+        self.assertEqual((r1["decisions_moved"], r1["decisions_noted"]), (1, 1))
+        t = self.c.get("/api/triage/canon1").get_json()
+        self.assertEqual((t["triage"]["decision"], t["triage"]["owner"], t["triage"]["next_steps"], t["triage"]["reason"]),
+                         ("full", "Nick", "call", "keep"))
+        self.assertTrue(any("philip" in c["body"] for c in t["comments"]))
+        r2 = self.c.post("/admin/repair").get_json()
+        self.assertEqual((r2["decisions_moved"], r2["decisions_noted"]), (0, 0))
+
+    def test_adopted_alert_row_not_duplicated_on_reupload(self):
+        self.c.post("/api/ingest/manual", json={"title": "Unique Dumping Camera Hire", "buyer": "Shire X",
+                                                "url": "https://example.org/dump-cam"})
+        csv = HEADER + row("Unique Dumping Camera Hire", "Shire X", "QLD-AU", "Open", "https://example.org/dump-cam")
+        for _ in range(2):
+            self.c.post("/api/upload", data={"a_projects": (__import__("io").BytesIO(csv.encode()), "a.csv")},
+                        content_type="multipart/form-data")
+        n = [p for p in self.c.get("/api/projects?hide_closed=0").get_json() if p["project_name"] == "Unique Dumping Camera Hire"]
+        self.assertEqual(len(n), 1)
+
+    def test_owner_must_be_string_safe(self):
+        h = self.c.get("/api/projects").get_json()[0]["project_hash"]
+        self.assertEqual(self.c.post(f"/api/triage/{h}", json={"owner": 5}).status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

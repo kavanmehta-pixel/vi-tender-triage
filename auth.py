@@ -14,6 +14,7 @@ before deploying.
 import hashlib
 import hmac
 import os
+import re
 import time
 from datetime import timedelta
 from urllib.parse import urlparse
@@ -25,6 +26,7 @@ PUBLIC_ENDPOINTS = {"login", "logout", "healthz", "static"}
 SELF_AUTH_ENDPOINTS = {"api_ingest_email"}
 
 _failures = {}          # ip -> (count, first_ts); slows down password guessing
+_global = {"n": 0, "since": 0.0}   # all failures, so rotating IPs/headers doesn't help
 
 
 def _env(name):
@@ -85,15 +87,19 @@ def init(app):
         configured = bool(_env("APP_PASSWORD"))
         error = None
         nxt = request.values.get("next") or "/"
-        if not nxt.startswith("/") or nxt.startswith("//"):
+        # local paths only: no scheme, no host, no backslash/whitespace tricks ("/\t/evil.com")
+        if not re.fullmatch(r"/(?![/\\])[A-Za-z0-9_\-./?=&%:+,]*", nxt):
             nxt = "/"
         if request.method == "POST":
-            ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
+            # Railway's proxy appends the real client address last; earlier entries are client-supplied
+            ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[-1].strip()
             n, first = _failures.get(ip, (0, time.time()))
             if time.time() - first > 900:
                 n, first = 0, time.time()
+            if time.time() - _global["since"] > 900:
+                _global.update(n=0, since=time.time())
             name = (request.form.get("name") or "").strip()[:60]
-            if n >= 10:
+            if n >= 10 or _global["n"] >= 60:
                 error = "Too many attempts. Wait 15 minutes."
             elif not configured:
                 error = "Sign-in is not set up yet (APP_PASSWORD is missing in Railway)."
@@ -107,7 +113,7 @@ def init(app):
                 return redirect(nxt)
             else:
                 _failures[ip] = (n + 1, first)
-                time.sleep(1)
+                _global["n"] += 1
                 error = "Wrong password."
         return render_template("login.html", error=error, next=nxt, configured=configured,
                                names=[x.strip() for x in _env("TEAM_NAMES").split(",") if x.strip()])

@@ -553,7 +553,7 @@ function render(){
       <td>${dlBadge(d)}</td>
       <td>${d.commodity==='yes'?'<span class="badge b-PASS">COMMODITY</span>':(d.moats||'').split('; ').filter(Boolean).map(m=>`<span class="moat" title="${esc(m)}">${m.slice(0,2)}</span>`).join('')}</td>
       <td>${esc(d.sector)}</td>
-      <td class="loc">${esc(d.location)}<span class="row-actions"> <button class="icon-btn" title="Hide this tender (reversible — goes to Archive)" aria-label="Hide tender" onclick="event.stopPropagation();hideRow('${esc(d.project_hash)}','${esc((d.project_name||'').slice(0,40)).replace(/'/g,"")}')">✕</button></span></td>
+      <td class="loc">${esc(d.location)}<span class="row-actions"> <button class="icon-btn" title="Hide this tender (reversible — goes to Archive)" aria-label="Hide tender" data-hash="${esc(d.project_hash)}" data-name="${esc((d.project_name||'').slice(0,40))}" onclick="event.stopPropagation();hideRow(this.dataset.hash,this.dataset.name)">✕</button></span></td>
     </tr>
     <tr class="detail" id="det${i}" style="display:none"><td colspan="8">
       <div class="detail-inner">
@@ -888,14 +888,14 @@ async function mergeGroup(gi){
     (r.comments_moved?` · ${r.comments_moved} comment(s) carried over`:'')+
     (r.decision_adopted?' · decision kept':''),'', ()=>undoMerge(others));
   const el=document.getElementById('dg-'+gi); if(el) el.remove();
-  DATA=await loadData(showClosed); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); refreshBadges();
 }
 
 async function undoMerge(hashes){
   await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({hashes,hidden:false})});
   toast('Merge undone','warn');
-  DATA=await loadData(showClosed); renderDuplicates(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); renderDuplicates(); refreshBadges();
 }
 
 async function mergeAll(){
@@ -908,7 +908,7 @@ async function mergeAll(){
     if(r.ok) n+=r.merged;
   }
   toast(`Merged ${n} duplicate rows`);
-  DATA=await loadData(showClosed); renderDuplicates(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); renderDuplicates(); refreshBadges();
 }
 
 // ── Archive ───────────────────────────────────────────────────────────
@@ -943,18 +943,18 @@ async function restore(hash){
   await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({hashes:[hash],hidden:false})});
   toast('Restored to active list');
-  DATA=await loadData(showClosed); renderArchive(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); renderArchive(); refreshBadges();
 }
 
 async function hideRow(hash,name){
   await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({hashes:[hash],hidden:true})});
-  toast(`Hidden: ${name}`, 'warn', async()=>{
+  toast(`Hidden: ${esc(name)}`, 'warn', async()=>{
     await fetch('/api/hide',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({hashes:[hash],hidden:false})});
-    DATA=await loadData(showClosed); render(); refreshBadges(); toast('Restored');
+    DATA=await loadData(showClosed); syncNew(); render(); refreshBadges(); toast('Restored');
   });
-  DATA=await loadData(showClosed); render(); refreshBadges();
+  DATA=await loadData(showClosed); syncNew(); render(); refreshBadges();
 }
 
 async function refreshBadges(){

@@ -702,7 +702,7 @@ def portal_fields(url, text=""):
     return (p or {}).get("key", ""), ref, email_ingest.normalise_url(url or "")
 
 
-def find_existing(db, portal, portal_ref, url_norm, dk, exclude_via=None):
+def find_existing(db, portal, portal_ref, url_norm, dk, exclude_via=None, exclude_source=None):
     """Match a tender already in the DB by portal reference, then URL, then the
     normalised name+buyer key. exclude_via skips rows already reported by that
     channel (scrape rows are never auto-merged with each other - that stays a
@@ -719,6 +719,8 @@ def find_existing(db, portal, portal_ref, url_norm, dk, exclude_via=None):
         for row in db.execute(base.format(cond=cond), params).fetchall():
             row = dict(row)
             if exclude_via and exclude_via in (row.get("seen_via") or "").split(","):
+                continue
+            if exclude_source and (row.get("source") or "scrape") == exclude_source:
                 continue
             return row
     return None
@@ -889,7 +891,9 @@ def ingest_projects(csv_text, run_id, db):
         if not existing:
             # Not seen by the scrape before - but an email alert or a manual entry
             # may already have created it. Adopt that row rather than duplicate it.
-            prior = find_existing(db, portal, portal_ref, url_norm, dk, exclude_via="scrape")
+            # only rows that STARTED as an alert/manual entry; an already-adopted
+            # row has seen_via=scrape too and must still be found again
+            prior = find_existing(db, portal, portal_ref, url_norm, dk, exclude_source="scrape")
             if prior:
                 h = prior["project_hash"]
                 existing = known.get(h) or prior
@@ -1050,9 +1054,11 @@ def save_triage(project_hash):
     if decision not in ("", "full", "philip", "bdm", "pass"):
         return jsonify({"ok": False, "error": "unknown decision"}), 400
     reason = pick("reason")
-    decided_by = pick("decided_by") or current_user() or ""
+    decision_changed = (not existing) or (cur.get("decision") or "") != decision
+    decided_by = ((current_user() if current_user() != "api" else "") or pick("decided_by")) \
+        if decision_changed else (cur.get("decided_by") or "")
     status = pick("status")
-    owner = pick("owner")
+    owner = str(pick("owner") or "")[:80]
     next_steps = pick("next_steps")
     scope = pick("scope")
     value = _clean_value(pick("value"))
@@ -1067,7 +1073,7 @@ def save_triage(project_hash):
     if status not in ("Won", "Lost"):
         outcome_at = ""
     # decided_at means "when the decision was made", not "last autosave"
-    decided_at = cur.get("decided_at") if (existing and cur.get("decision") == decision) else now
+    decided_at = now if decision_changed else cur.get("decided_at")
     try:
         db.execute("""INSERT INTO triage (project_hash, decision, reason, decided_by, decided_at, status, owner, next_steps, scope, status_updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -1263,6 +1269,45 @@ def api_duplicates():
     return jsonify(out)
 
 
+TRIAGE_COLS = ["decision", "reason", "decided_by", "decided_at", "status", "owner", "next_steps",
+               "scope", "status_updated_at", "value", "outcome_reason", "submitted_at", "outcome_at"]
+
+
+def fold_triage(db, canonical, src, who, now, label):
+    """Fold one triage row (dict) into the canonical tender without losing anything.
+    No canonical row: copy it. Canonical row without a decision: take the decision
+    and fill only the canonical's EMPTY fields. Canonical already decided: keep it
+    and record the other as a comment. Returns 'moved' or 'noted'."""
+    cur = db.execute("SELECT * FROM triage WHERE project_hash=?", (canonical,)).fetchone()
+    cur = dict(cur) if cur else None
+    if cur is None:
+        db.execute(f"INSERT INTO triage (project_hash, {', '.join(TRIAGE_COLS)}) VALUES (?{', ?' * len(TRIAGE_COLS)})",
+                   [canonical] + [src.get(c) for c in TRIAGE_COLS])
+        return "moved"
+    if not cur.get("decision"):
+        merged = {c: (cur.get(c) if cur.get(c) not in (None, "") else src.get(c)) for c in TRIAGE_COLS}
+        merged["decision"], merged["decided_at"], merged["decided_by"] = (
+            src.get("decision"), src.get("decided_at"), src.get("decided_by"))
+        db.execute("UPDATE triage SET " + ", ".join(f"{c}=?" for c in TRIAGE_COLS) + " WHERE project_hash=?",
+                   [merged[c] for c in TRIAGE_COLS] + [canonical])
+        return "moved"
+    note = (f"[{label}] duplicate had decision: {src.get('decision')}"
+            + (f"; status: {src['status']}" if src.get("status") else "")
+            + (f"; owner: {src['owner']}" if src.get("owner") else "")
+            + (f"; reason: {src['reason']}" if src.get("reason") else ""))
+    db.execute("INSERT INTO comments (project_hash, author, body, created_at) VALUES (?,?,?,?)",
+               (canonical, who or "system", note, now))
+    return "noted"
+
+
+def _retire_triage(db, h, canonical):
+    """The source row's decision now lives on the canonical row; clear it here so a
+    second merge/repair is a no-op (the reason keeps a pointer for history)."""
+    db.execute("""UPDATE triage SET decision='', reason=? WHERE project_hash=?""",
+               (f"[folded into {canonical}] " + (db.execute("SELECT reason FROM triage WHERE project_hash=?",
+                                                            (h,)).fetchone()["reason"] or ""), h))
+
+
 @app.route("/api/merge", methods=["POST"])
 def api_merge():
     """Fold duplicates into one canonical row. Triage decisions and comments from
@@ -1280,10 +1325,6 @@ def api_merge():
     who = current_user()
     moved_comments = 0
     adopted = None
-    cols = ["decision", "reason", "decided_by", "decided_at", "status", "owner", "next_steps",
-            "scope", "status_updated_at", "value", "outcome_reason", "submitted_at", "outcome_at"]
-    existing = db.execute("SELECT decision FROM triage WHERE project_hash=?", (canonical,)).fetchone()
-    has_decision = bool(existing and existing["decision"])
     for h in others:
         cur = db.execute("UPDATE comments SET project_hash=? WHERE project_hash=?", (canonical, h))
         moved_comments += cur.rowcount or 0
@@ -1291,20 +1332,9 @@ def api_merge():
                        (h,)).fetchone()
         if t:
             t = dict(t)
-            if not has_decision:
-                # canonical had no decision: it takes this one, every field of it
-                db.execute("DELETE FROM triage WHERE project_hash=?", (canonical,))
-                db.execute(f"INSERT INTO triage (project_hash, {', '.join(cols)}) VALUES (?{', ?' * len(cols)})",
-                           [canonical] + [t.get(c) for c in cols])
-                has_decision, adopted = True, t["decision"]
-            else:
-                # keep the canonical decision; record the other so nothing is silently dropped
-                note = (f"[merged duplicate] had decision: {t['decision']}"
-                        + (f"; status: {t['status']}" if t.get("status") else "")
-                        + (f"; owner: {t['owner']}" if t.get("owner") else "")
-                        + (f"; reason: {t['reason']}" if t.get("reason") else ""))
-                db.execute("INSERT INTO comments (project_hash, author, body, created_at) VALUES (?,?,?,?)",
-                           (canonical, who or "system", note, now))
+            if fold_triage(db, canonical, t, who, now, "merged") == "moved":
+                adopted = adopted or t["decision"]
+            _retire_triage(db, h, canonical)
         db.execute("UPDATE projects SET merged_into=?, hidden=1 WHERE project_hash=?", (canonical, h))
     db.commit()
     return jsonify({"ok": True, "merged": len(others),
@@ -1429,9 +1459,12 @@ def effective_closing(d):
     the keyword-anchored parser, so dates stored by the old parser (approval,
     award or 'verified' dates) no longer hide live tenders. Researched, alert and
     manual dates are taken as stored."""
-    if (d.get("source") in (None, "", "scrape")) and not d.get("researched_at"):
+    via = (d.get("seen_via") or "").split(",")
+    if (d.get("source") in (None, "", "scrape")) and not d.get("researched_at") \
+            and "alert" not in via and "manual" not in via:
         return extract_closing_date((d.get("stage") or "") + " " + (d.get("notes") or ""))
-    return valid_iso_date(d.get("closing_date"))
+    return valid_iso_date(d.get("closing_date")) or extract_closing_date(
+        (d.get("stage") or "") + " " + (d.get("notes") or ""))
 
 
 def enrich(d, cutoff=None):
@@ -1502,9 +1535,16 @@ def _new_cutoff(db):
     if not runs:
         return (datetime.utcnow() - timedelta(days=7)).isoformat()
     latest = datetime.fromisoformat(runs[0][:26])
-    session_start = latest - timedelta(hours=12)
-    earlier = [r for r in runs if datetime.fromisoformat(r[:26]) < session_start]
-    return earlier[0] if earlier else "0000"
+    session_start = (latest - timedelta(hours=12)).isoformat()
+    earlier = [r for r in runs if r < session_start]
+    if not earlier:
+        return "0000"
+    # Older runs were stamped before their rows were ingested, so also step past
+    # the last scrape row the previous session added.
+    last = db.execute("""SELECT MAX(first_seen_at) AS m FROM projects
+                         WHERE (source IS NULL OR source = '' OR source = 'scrape')
+                           AND first_seen_at < ?""", (session_start,)).fetchone()
+    return max(earlier[0], (last["m"] if last and last["m"] else ""))
 
 
 @app.route("/api/projects/new")
@@ -1601,8 +1641,9 @@ def api_upload():
     total_active = db.execute("SELECT COUNT(*) as n FROM projects WHERE active='true'").fetchone()["n"]
     new_this_run = sum(r.get("new_projects", 0) for r in results.values() if isinstance(r, dict))
 
+    # stamp the run AFTER ingest, so every row it added is first_seen before it
     db.execute("INSERT INTO runs (id, created_at, total_projects, new_projects, go_count, maybe_count, pass_count) VALUES (?,?,?,?,?,?,?)",
-               (run_id, now, total_active, new_this_run, go, maybe, pas))
+               (run_id, datetime.utcnow().isoformat(), total_active, new_this_run, go, maybe, pas))
     db.commit()
     results["summary"] = {
         "total_active": total_active, "new_this_run": new_this_run,
@@ -1653,7 +1694,8 @@ def maybe_notify_owner(db, project_hash, owner, prev_owner):
     """Michael: 'when you allocate it, it automatically sends an email to the rep -
     this one's come in your region, investigate, have a chat'. Fires once per new
     owner, only for people in the BDM directory. Returns a short status string."""
-    if not owner or owner.strip().lower() == (prev_owner or "").strip().lower():
+    owner, prev_owner = str(owner or "").strip(), str(prev_owner or "").strip()
+    if not owner or owner.lower() == prev_owner.lower():
         return None
     b = _bdm_by_owner(db, owner)
     if not b or not b.get("email"):
@@ -1668,9 +1710,13 @@ def maybe_notify_owner(db, project_hash, owner, prev_owner):
     who = current_user() or "The tenders team"
     subject, html = brief_mod.build_allocation(p, b["name"], who, p.get("triage_reason") or "")
     cc = _env_list("ALLOCATION_CC")
-    db.execute("UPDATE triage SET notified_owner=?, notified_at=? WHERE project_hash=?",
-               (b["name"], datetime.utcnow().isoformat(), project_hash))
+    # claim the send atomically: two overlapping saves can't both email
+    claimed = db.execute("""UPDATE triage SET notified_owner=?, notified_at=?
+                            WHERE project_hash=? AND (notified_owner IS NULL OR notified_owner != ?)""",
+                         (b["name"], datetime.utcnow().isoformat(), project_hash, b["name"]))
     db.commit()
+    if not claimed.rowcount:
+        return None
 
     def _send():
         try:
@@ -1823,7 +1869,7 @@ def _orphaned_decisions(db):
                          JOIN projects p ON p.project_hash = t.project_hash
                          WHERE p.merged_into IS NOT NULL
                            AND t.decision IS NOT NULL AND t.decision != ''""").fetchall()
-    out = []
+    out, decided = [], {}
     for r in rows:
         r = dict(r)
         canon, seen = r["merged_into"], set()
@@ -1837,9 +1883,10 @@ def _orphaned_decisions(db):
                                ON t.project_hash=p.project_hash WHERE p.project_hash=?""", (canon,)).fetchone()
         r["canonical"] = canon
         r["canonical_name"] = target["project_name"] if target else None
-        r["canonical_decision"] = target["decision"] if target else None
-        r["action"] = ("move decision to canonical" if target and not target["decision"]
-                       else "keep canonical decision, add this one as a comment")
+        r["canonical_decision"] = (target["decision"] if target else None) or decided.get(canon)
+        r["action"] = ("move decision to the kept row" if not r["canonical_decision"]
+                       else "keep the kept row's decision, add this one as a comment")
+        decided.setdefault(canon, r["decision"])
         out.append(r)
     return out
 
@@ -1849,7 +1896,7 @@ def admin_repair():
     """Preview of the one-off data repairs. Nothing changes until Apply."""
     db = get_db()
     orphans = _orphaned_decisions(db)
-    raw = db.execute(f"SELECT project_hash, project_name, stage, notes, source, researched_at, closing_date "
+    raw = db.execute(f"SELECT project_hash, project_name, stage, notes, source, seen_via, researched_at, closing_date "
                      f"FROM projects p WHERE {VISIBLE_WHERE}").fetchall()
     changed = []
     for r in raw:
@@ -1866,27 +1913,18 @@ def admin_repair_apply():
     db = get_db()
     now = datetime.utcnow().isoformat()
     who = current_user() or "admin"
-    cols = ["decision", "reason", "decided_by", "decided_at", "status", "owner", "next_steps",
-            "scope", "status_updated_at", "value", "outcome_reason", "submitted_at", "outcome_at"]
     moved = noted = dates = 0
     try:
         for o in _orphaned_decisions(db):
-            if not o["canonical_decision"]:
-                db.execute("DELETE FROM triage WHERE project_hash=?", (o["canonical"],))
-                db.execute(f"INSERT INTO triage (project_hash, {', '.join(cols)}) VALUES (?{', ?' * len(cols)})",
-                           [o["canonical"]] + [o.get(c) for c in cols])
+            src = dict(db.execute("SELECT * FROM triage WHERE project_hash=?", (o["project_hash"],)).fetchone())
+            if fold_triage(db, o["canonical"], src, who, now, "repair") == "moved":
                 moved += 1
             else:
-                db.execute("INSERT INTO comments (project_hash, author, body, created_at) VALUES (?,?,?,?)",
-                           (o["canonical"], who,
-                            f"[repair] merged duplicate had decision: {o['decision']}"
-                            + (f"; status: {o['status']}" if o.get("status") else "")
-                            + (f"; owner: {o['owner']}" if o.get("owner") else "")
-                            + (f"; reason: {o['reason']}" if o.get("reason") else ""), now))
                 noted += 1
-            # the source triage row stays (history); it is filtered out of every view
+            _retire_triage(db, o["project_hash"], o["canonical"])
         # persist the corrected closing dates, keeping the old value alongside
-        raw = db.execute("SELECT project_hash, stage, notes, source, researched_at, closing_date FROM projects").fetchall()
+        raw = db.execute(f"SELECT project_hash, stage, notes, source, seen_via, researched_at, closing_date "
+                         f"FROM projects p WHERE {VISIBLE_WHERE}").fetchall()
         for r in raw:
             r = dict(r)
             eff = effective_closing(r)

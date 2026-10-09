@@ -32,7 +32,7 @@ _STATE_WORDS = [
     ("SA", r"\bsa\b|south australia|adelaide|eyre peninsula"),
     ("TAS", r"\btas\b|tasmania|hobart|launceston"),
     ("NT", r"\bnt\b|northern territory|darwin|alice springs"),
-    ("ACT", r"\bact\b|canberra"),
+    ("ACT", r"canberra|australian capital territory"),
     ("NZ", r"\bnz\b|new zealand|aotearoa|auckland|wellington|christchurch|waikato"),
 ]
 
@@ -43,6 +43,8 @@ def region_of(location, text=""):
     head = re.split(r"[-/,\s]", loc)[0] if loc else ""
     if head in STATES:
         return head
+    if re.search(r"\bact\b", (location or "").lower()):     # only in the location field ("Planning Act")
+        return "ACT"
     blob = ((location or "") + " " + (text or "")).lower()
     for st, pat in _STATE_WORDS:
         if re.search(pat, (location or "").lower()):
@@ -99,7 +101,7 @@ def fmt_money(v):
 
 # ─── Lanes ──────────────────────────────────────────────────────────────
 _TENDERISH = re.compile(r"tender|\beoi\b|expression of interest|\brf[tqpi]\b|request for|work package|"
-                        r"quot(e|ation)|panel|registration of interest|\broi\b|invitation to", re.I)
+                        r"quot(e|ation)|(?<!solar )\bpanel\b(?!s)|supplier panel|registration of interest|\broi\b|invitation to", re.I)
 _SECURITY_SCOPE = re.compile(r"cctv|surveillance|security|camera|monitoring|access control|alarm|patrol|"
                              r"anpr|number plate|guard|perimeter|intrusion", re.I)
 _PRE_MARKET = re.compile(r"pre-market|forward|advance notice|future|anticipat", re.I)
@@ -125,7 +127,7 @@ def suggest_lane(p, value=None):
     value = value if value is not None else p.get("est_value")
     if tenderish and scope and verdict in ("GO", "NEEDS DOC", "MAYBE") and (p.get("doability_score") or 0) >= 55:
         return "tender"
-    if tenderish and not scope:
+    if tenderish and not scope and (verdict in ("GO", "NEEDS DOC") or (value or 0) >= MAJOR_PROJECT_MIN):
         return "philip"
     if not tenderish and (value or 0) >= MAJOR_PROJECT_MIN:
         return "bdm"

@@ -40,16 +40,13 @@ def collect(db):
     today = datetime.utcnow().date().isoformat()
     horizon = (datetime.utcnow() + timedelta(days=14)).date().isoformat()
 
-    new_this_week = db.execute("""
-        SELECT p.project_name, p.customer, p.location, p.doability_score, p.verdict,
-               p.closing_date, p.source_url, t.decision AS triage_decision,
-               p.seen_via, p.portal_ref
-        FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
-        WHERE p.active='true' AND (p.hidden=0 OR p.hidden IS NULL) AND p.merged_into IS NULL
-          AND p.first_seen_at >= ?
-          AND (t.decision IS NULL OR t.decision != 'pass')
-        ORDER BY p.doability_score DESC
-    """, (week_ago,)).fetchall()
+    # Same loader as the dashboard, so "new" and deadlines match what people see.
+    from app import load_projects
+    rows = load_projects(db, hide_closed=True)
+    keys = ("project_name", "customer", "location", "doability_score", "verdict", "closing_date",
+            "source_url", "triage_decision", "seen_via", "portal_ref")
+    new_this_week = [{k: p.get(k) for k in keys} for p in rows
+                     if p.get("is_new") and p.get("triage_decision") != "pass"]
 
     decided_this_week = db.execute("""
         SELECT p.project_name, p.customer, p.closing_date, p.source_url,
@@ -75,22 +72,21 @@ def collect(db):
         WHERE t.status IN ('Won','Lost') AND t.status_updated_at >= ? AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
     """, (week_ago,)).fetchall()
 
-    deadlines = db.execute("""
-        SELECT p.project_name, p.customer, p.closing_date, p.source_url,
-               t.decision, t.owner, t.status
-        FROM projects p LEFT JOIN triage t ON t.project_hash = p.project_hash
-        WHERE p.active='true' AND p.merged_into IS NULL AND (p.hidden=0 OR p.hidden IS NULL)
-          AND p.closing_date >= ? AND p.closing_date <= ?
-          AND (t.decision IN ('full','philip') OR p.verdict='GO')
-        ORDER BY p.closing_date ASC
-    """, (today, horizon)).fetchall()
+    deadlines = sorted(
+        ({"project_name": p["project_name"], "customer": p.get("customer"), "closing_date": p["closing_date"],
+          "source_url": p.get("source_url"), "decision": p.get("triage_decision"),
+          "owner": p.get("triage_owner"), "status": p.get("triage_status")}
+         for p in rows
+         if p.get("closing_date") and today <= p["closing_date"] <= horizon
+         and (p.get("triage_decision") in ("full", "philip", "bdm") or p.get("verdict") == "GO")),
+        key=lambda d: d["closing_date"])
 
     return {
-        "new": [dict(r) for r in new_this_week],
+        "new": new_this_week,
         "decided": [dict(r) for r in decided_this_week],
         "pipeline": [dict(r) for r in pipeline],
         "outcomes": [dict(r) for r in outcomes],
-        "deadlines": [dict(r) for r in deadlines],
+        "deadlines": deadlines,
     }
 
 

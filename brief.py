@@ -57,7 +57,7 @@ def _row(p, extra=""):
     return (f'<tr><td style="padding:7px 0;border-bottom:1px solid #eee;font-size:13px">'
             f'{link(p.get("project_name"), p.get("source_url"))}{new}'
             f'<div style="color:#666;font-size:12px;margin-top:2px">{" · ".join(b for b in bits if b)}</div>'
-            f'{extra}<div style="margin-top:2px">{dash_link(p)}</div></td></tr>')
+            f'{extra}</td></tr>')
 
 
 def _table(rows, empty="Nothing this week."):
@@ -114,8 +114,10 @@ def build_brief(rows, bdms, today=None, per_state=8):
     today = today or (datetime.utcnow() + timedelta(hours=11)).date()
     live = [p for p in rows if p.get("lane") != "pass"]
 
-    live = _dedupe(live)
-    tender = [p for p in live if p.get("triage_decision") == "full"]
+    # when the same job appears twice, keep the copy someone has made a decision on
+    live = _dedupe(sorted(live, key=lambda p: 0 if p.get("triage_decision") else 1))
+    tender = [p for p in live if p.get("triage_decision") == "full"
+              and (p.get("triage_status") or "") not in ("Won", "Lost")]
     review = [p for p in live if p["lane"] == "tender" and p["lane_suggested"] and p.get("is_new")]
     philip = [p for p in live if p.get("triage_decision") == "philip"
               and (p.get("triage_status") or "") not in ("Won", "Lost")]
